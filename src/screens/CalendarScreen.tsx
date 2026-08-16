@@ -1,0 +1,343 @@
+import { useEffect, useMemo, useState } from "react";
+import { useOutletContext } from "react-router-dom";
+import {
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  MapPin,
+  Music,
+  Plus,
+} from "lucide-react";
+import { supabase } from "../lib/supabase";
+import type { EventRow, EventType, Profile } from "../lib/types";
+import {
+  addMonths,
+  fmtDateTime,
+  fmtMonthYear,
+  isSameDay,
+  monthMatrix,
+  relativeDay,
+  startOfDay,
+} from "../lib/date";
+import { EVENT_TYPE_CHIP, EVENT_TYPE_LABEL } from "../lib/constants";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  cn,
+} from "../components/ui";
+
+const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
+
+function EventCard({ event }: { event: EventRow }) {
+  return (
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl",
+            EVENT_TYPE_CHIP[event.type]
+          )}
+        >
+          <Music className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-bold text-ink dark:text-zinc-100">
+              {event.name}
+            </p>
+            <Badge className={EVENT_TYPE_CHIP[event.type]}>
+              {EVENT_TYPE_LABEL[event.type]}
+            </Badge>
+          </div>
+          <p className="mt-1 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <Clock className="size-3.5" /> {fmtDateTime(event.date)}
+          </p>
+          {event.location && (
+            <p className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <MapPin className="size-3.5" /> {event.location}
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+export default function CalendarScreen() {
+  const { profile } = useOutletContext<{ profile: Profile }>();
+  const canAdd = profile.role === "director" || profile.role === "section_leader";
+
+  const now = new Date();
+  const [cursor, setCursor] = useState(
+    new Date(now.getFullYear(), now.getMonth(), 1)
+  );
+  const [selected, setSelected] = useState<Date>(startOfDay(now));
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+
+  // add-event form
+  const [name, setName] = useState("");
+  const [type, setType] = useState<EventType>("rehearsal");
+  const [date, setDate] = useState("");
+  const [location, setLocation] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  async function loadEvents() {
+    setLoading(true);
+    const { data } = await supabase
+      .from("events")
+      .select("*")
+      .order("date", { ascending: true });
+    setEvents((data as EventRow[]) ?? []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    void loadEvents();
+  }, []);
+
+  const matrix = useMemo(
+    () => monthMatrix(cursor.getFullYear(), cursor.getMonth()),
+    [cursor]
+  );
+
+  const byDay = useMemo(() => {
+    const map = new Map<string, EventRow[]>();
+    for (const ev of events) {
+      const key = startOfDay(new Date(ev.date)).toDateString();
+      const arr = map.get(key) ?? [];
+      arr.push(ev);
+      map.set(key, arr);
+    }
+    return map;
+  }, [events]);
+
+  const dayEvents = useMemo(
+    () =>
+      (byDay.get(selected.toDateString()) ?? []).sort(
+        (a, b) => +new Date(a.date) - +new Date(b.date)
+      ),
+    [byDay, selected]
+  );
+
+  async function submitEvent(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+    if (!name.trim() || !date) {
+      setFormError("Give the event a name and a date.");
+      return;
+    }
+    setSaving(true);
+    const { error } = await supabase.from("events").insert({
+      name: name.trim(),
+      type,
+      date: new Date(date).toISOString(),
+      location: location.trim(),
+      created_by: profile.id,
+    });
+    setSaving(false);
+    if (error) {
+      setFormError(error.message);
+      return;
+    }
+    setShowAdd(false);
+    setName("");
+    setType("rehearsal");
+    setDate("");
+    setLocation("");
+    void loadEvents();
+  }
+
+  function openAdd() {
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 18, 0);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setDate(
+      `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(
+        tomorrow.getDate()
+      )}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`
+    );
+    setShowAdd(true);
+  }
+
+  return (
+    <div className="px-4 pb-6 pt-5">
+      {/* header */}
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-black text-ink dark:text-zinc-100">
+            Calendar
+          </h1>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {profile.display_name || profile.full_name} ·{" "}
+            {profile.instrument || "Staff"}
+          </p>
+        </div>
+        {canAdd && (
+          <Button size="sm" onClick={openAdd}>
+            <Plus className="size-4" /> Add event
+          </Button>
+        )}
+      </div>
+
+      {/* month card */}
+      <Card className="p-4">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-ink dark:text-zinc-100">
+            {fmtMonthYear(cursor.getFullYear(), cursor.getMonth())}
+          </h2>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setCursor(addMonths(cursor, -1))}
+              className="rounded-full p-2 text-zinc-500 hover:bg-moss dark:text-zinc-400 dark:hover:bg-zinc-800"
+              aria-label="Previous month"
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <button
+              onClick={() => setCursor(addMonths(cursor, 1))}
+              className="rounded-full p-2 text-zinc-500 hover:bg-moss dark:text-zinc-400 dark:hover:bg-zinc-800"
+              aria-label="Next month"
+            >
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 text-center">
+          {WEEKDAYS.map((w, i) => (
+            <div
+              key={i}
+              className="py-1 text-[11px] font-bold uppercase text-zinc-400"
+            >
+              {w}
+            </div>
+          ))}
+          {matrix.flat().map((day, i) => {
+            if (!day) return <div key={i} />;
+            const has = (byDay.get(day.toDateString())?.length ?? 0) > 0;
+            const isSelected = isSameDay(day, selected);
+            const isToday = isSameDay(day, now);
+            return (
+              <button
+                key={i}
+                onClick={() => setSelected(startOfDay(day))}
+                className="flex flex-col items-center gap-1 py-1.5"
+              >
+                <span
+                  className={cn(
+                    "flex size-9 items-center justify-center rounded-full text-sm font-semibold transition-colors",
+                    isSelected
+                      ? "bg-forest text-white dark:bg-mid"
+                      : isToday
+                        ? "text-forest ring-1 ring-forest dark:text-gold dark:ring-gold"
+                        : "text-ink dark:text-zinc-200"
+                  )}
+                >
+                  {day.getDate()}
+                </span>
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    has
+                      ? isSelected
+                        ? "bg-gold"
+                        : "bg-gold"
+                      : "bg-transparent"
+                  )}
+                />
+              </button>
+            );
+          })}
+        </div>
+      </Card>
+
+      {/* selected day events */}
+      <div className="mt-5">
+        <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
+          {relativeDay(selected.toISOString())}
+        </p>
+        {loading ? (
+          <div className="space-y-2">
+            <div className="h-20 animate-pulse rounded-2xl bg-zinc-100 dark:bg-zinc-800" />
+            <div className="h-20 animate-pulse rounded-2xl bg-zinc-100 dark:bg-zinc-800" />
+          </div>
+        ) : dayEvents.length === 0 ? (
+          <EmptyState
+            icon={<CalendarDays className="size-6" />}
+            title="No events this day"
+            subtitle={canAdd ? "Tap “Add event” to schedule something." : undefined}
+          />
+        ) : (
+          <div className="space-y-2">
+            {dayEvents.map((ev) => (
+              <EventCard key={ev.id} event={ev} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* add event modal */}
+      <Modal
+        open={showAdd}
+        onClose={() => setShowAdd(false)}
+        title="Add event"
+      >
+        <form onSubmit={submitEvent} className="space-y-4">
+          <Field label="Event name">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Homecoming Game"
+            />
+          </Field>
+          <Field label="Type">
+            <div className="grid grid-cols-3 gap-2">
+              {(["rehearsal", "game", "concert"] as EventType[]).map((t) => (
+                <button
+                  type="button"
+                  key={t}
+                  onClick={() => setType(t)}
+                  className={cn(
+                    "min-h-10 rounded-xl text-xs font-semibold transition-colors",
+                    type === t
+                      ? EVENT_TYPE_CHIP[t]
+                      : "bg-cream text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                  )}
+                >
+                  {EVENT_TYPE_LABEL[t]}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Date & time">
+            <Input
+              type="datetime-local"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </Field>
+          <Field label="Location">
+            <Input
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="RHS Stadium"
+            />
+          </Field>
+          {formError && <Alert tone="error">{formError}</Alert>}
+          <Button type="submit" size="lg" loading={saving} className="w-full">
+            Save event
+          </Button>
+        </form>
+      </Modal>
+    </div>
+  );
+}

@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: toggled by adding .dark on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* RHS forest & gold palette */
+  --color-forest: #2d5a1b;
+  --color-forest-deep: #1d3c11;
+  --color-mid: #3d7a28;
+  --color-moss: #e8f0df;
+  --color-gold: #f5a623;
+  --color-gold-deep: #c97f0b;
+  --color-cream: #f6f7f2;
+  --color-ink: #1c2517;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: var(--color-cream);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+.dark body {
+  color: #e4e4e7;
+  background: #0c0f0a;
+}
+
+/* Hide the dotted autofill highlight chrome */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #fff inset;
+}
+
+/* Thin scrollbars inside the phone shell */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(0 0 0 / 0.2) transparent;
+}
