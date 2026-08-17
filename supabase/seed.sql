@@ -247,6 +247,33 @@ update public.profiles set display_name = 'Diego' where id = '2b2b2b2b-2b2b-4b2b
 update public.profiles set display_name = 'Chloe' where id = '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c';
 
 -- ---------------------------------------------------------------------------
+-- 2b. GoTrue token columns
+-- ---------------------------------------------------------------------------
+-- GoTrue fails to authenticate users whose token/change columns are NULL
+-- ("Database error querying schema" on sign-in). Direct inserts into
+-- auth.users leave them NULL, so force them to '' for all demo accounts.
+update auth.users
+   set confirmation_token = '',
+       recovery_token = '',
+       email_change = '',
+       email_change_token_new = '',
+       email_change_token_current = '',
+       phone_change = '',
+       phone_change_token = '',
+       reauthentication_token = ''
+ where email in (
+   'director@rhsband.org',
+   'tyler.nguyen@rhsband.org',
+   'ava.rodriguez@rhsband.org',
+   'mia.chen@rhsband.org',
+   'noah.williams@rhsband.org',
+   'ethan.patel@rhsband.org',
+   'lily.johnson@rhsband.org',
+   'diego.silva@rhsband.org',
+   'chloe.brooks@rhsband.org'
+ );
+
+-- ---------------------------------------------------------------------------
 -- 3. Events (relative to today so the demo always shows a live calendar)
 -- ---------------------------------------------------------------------------
 insert into public.events (id, name, type, date, location, created_by) values
