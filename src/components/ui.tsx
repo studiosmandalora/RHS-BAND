@@ -99,7 +99,9 @@ export function Field({
 }
 
 const inputBase =
-  "w-full min-h-11 rounded-xl bg-cream px-4 text-sm text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10 dark:focus:ring-mid";
+  // text-base (16px) prevents iOS Safari from auto-zooming into fields on
+  // focus — anything smaller than 16px triggers the zoom on phones/tablets.
+  "w-full min-h-11 rounded-xl bg-cream px-4 text-base text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10 dark:focus:ring-mid";
 
 export function Input(
   props: React.InputHTMLAttributes<HTMLInputElement>

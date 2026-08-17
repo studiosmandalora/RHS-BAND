@@ -186,15 +186,17 @@ export default function AppShell() {
   const tabs = TABS.filter((t) => t.roles.includes(role));
 
   return (
-    <div className="min-h-dvh bg-zinc-200 dark:bg-black md:flex md:items-stretch md:justify-center md:py-6">
-      <div className="relative flex w-full max-w-[430px] flex-col overflow-hidden bg-cream dark:bg-zinc-950 md:min-h-[min(880px,calc(100dvh-3rem))] md:rounded-[2.2rem] md:shadow-2xl md:ring-1 md:ring-black/10 dark:md:ring-white/10">
-        {/* Content scrolls inside the phone frame */}
-        <main className="flex-1 overflow-y-auto overscroll-contain">
+    <div className="flex h-dvh flex-col bg-cream dark:bg-zinc-950">
+      {/* Content scrolls; the tab bar stays pinned to the bottom */}
+      <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
+        <div className="mx-auto h-full w-full max-w-3xl">
           <Outlet context={{ profile, refreshProfile }} />
-        </main>
+        </div>
+      </main>
 
-        {/* Bottom tab bar */}
-        <nav className="shrink-0 border-t border-black/5 bg-white/95 backdrop-blur dark:border-white/10 dark:bg-zinc-900/95">
+      {/* Bottom tab bar */}
+      <nav className="shrink-0 border-t border-black/5 bg-white/95 backdrop-blur dark:border-white/10 dark:bg-zinc-900/95">
+        <div className="mx-auto w-full max-w-3xl">
           <div
             className="grid"
             style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
@@ -230,8 +232,8 @@ export default function AppShell() {
               </NavLink>
             ))}
           </div>
-        </nav>
-      </div>
+        </div>
+      </nav>
     </div>
   );
 }

@@ -264,7 +264,7 @@ export default function ChatScreen() {
           onChange={(e) => setDraft(e.target.value)}
           placeholder={`Message ${active ? active.name : "…"}`}
           maxLength={2000}
-          className="min-h-11 flex-1 rounded-full bg-white px-4 text-sm text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-900 dark:text-zinc-100 dark:ring-white/10"
+          className="min-h-11 flex-1 rounded-full bg-white px-4 text-base text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-900 dark:text-zinc-100 dark:ring-white/10"
         />
         <button
           type="submit"
