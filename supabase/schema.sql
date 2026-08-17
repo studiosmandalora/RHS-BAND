@@ -272,7 +272,12 @@ drop policy if exists "profiles_delete_director" on public.profiles;
 create policy "profiles_delete_director"
   on public.profiles for delete
   to authenticated
-  using ((select public.user_role()) = 'director');
+  using (
+    (select public.user_role()) = 'director'
+    -- directors manage students & section leaders, never other directors
+    -- (or themselves)
+    and role <> 'director'
+  );
 
 -- events -------------------------------------------------------------------
 drop policy if exists "events_read_all_authed" on public.events;
