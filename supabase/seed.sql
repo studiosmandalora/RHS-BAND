@@ -75,7 +75,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'ava.rodriguez@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'ava.rodriguez@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{"provider":"email","providers":["email"]}',
       '{"full_name":"Ava Rodriguez","display_name":"Ava","instrument":"Flute"}',
       now(), now()
@@ -84,7 +84,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'ava.rodriguez@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'ava.rodriguez@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -97,7 +97,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'mia.chen@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'mia.chen@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{"provider":"email","providers":["email"]}',
       '{"full_name":"Mia Chen","display_name":"Mia","instrument":"Clarinet"}',
       now(), now()
@@ -106,7 +106,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'mia.chen@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'mia.chen@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -119,7 +119,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'noah.williams@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'noah.williams@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Noah Williams","display_name":"Noah","instrument":"Saxophone"}',
       now(), now()
@@ -128,7 +128,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'noah.williams@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'noah.williams@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -141,7 +141,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'ethan.patel@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'ethan.patel@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Ethan Patel","display_name":"Ethan","instrument":"Percussion"}',
       now(), now()
@@ -150,7 +150,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'ethan.patel@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'ethan.patel@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -163,7 +163,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'lily.johnson@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'lily.johnson@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Lily Johnson","display_name":"Lily","instrument":"Trombone"}',
       now(), now()
@@ -172,7 +172,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'lily.johnson@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'lily.johnson@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -185,7 +185,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'diego.silva@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'diego.silva@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Diego Silva","display_name":"Diego","instrument":"Baritone"}',
       now(), now()
@@ -194,7 +194,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'diego.silva@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'diego.silva@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;
@@ -207,7 +207,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'chloe.brooks@crhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      'chloe.brooks@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Chloe Brooks","display_name":"Chloe","instrument":"Color Guard"}',
       now(), now()
@@ -216,7 +216,7 @@ begin
       id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) values (
       v_id, v_id,
-      jsonb_build_object('sub', v_id::text, 'email', 'chloe.brooks@crhsband.org'),
+      jsonb_build_object('sub', v_id::text, 'email', 'chloe.brooks@rhsband.org'),
       'email', v_id::text, now(), now(), now()
     );
   end if;

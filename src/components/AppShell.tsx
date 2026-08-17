@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   CalendarDays,
   ClipboardCheck,
+  KeyRound,
+  LogOut,
   MessageSquare,
   QrCode,
   User,
@@ -9,8 +12,8 @@ import {
 } from "lucide-react";
 import { useAuth } from "../hooks/useAuth";
 import { supabase } from "../lib/supabase";
-import { cn } from "./ui";
-import type { Role } from "../lib/types";
+import { Alert, Button, Field, Input, cn } from "./ui";
+import type { Profile, Role } from "../lib/types";
 
 function Splash() {
   return (
@@ -20,6 +23,106 @@ function Splash() {
       </div>
       <p className="text-sm font-semibold text-white/80">Band Attendance</p>
       <div className="size-2 animate-pulse rounded-full bg-gold" />
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Forced password change — shown when the director added this member and
+/* must_change_password is still true. The rest of the app is unreachable until
+/* they set their own password and the flag is cleared.                       */
+/* -------------------------------------------------------------------------- */
+function ForcePasswordChange({
+  profile,
+  refreshProfile,
+}: {
+  profile: Profile;
+  refreshProfile: () => Promise<void>;
+}) {
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (pw1.length < 6) {
+      setError("New password must be at least 6 characters.");
+      return;
+    }
+    if (pw1 !== pw2) {
+      setError("Passwords don't match.");
+      return;
+    }
+    setBusy(true);
+    const { error: uErr } = await supabase.auth.updateUser({ password: pw1 });
+    if (uErr) {
+      setError(uErr.message);
+      setBusy(false);
+      return;
+    }
+    const { error: pErr } = await supabase
+      .from("profiles")
+      .update({ must_change_password: false })
+      .eq("id", profile.id);
+    setBusy(false);
+    if (pErr) {
+      setError(pErr.message);
+      return;
+    }
+    setPw1("");
+    setPw2("");
+    await refreshProfile();
+  }
+
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center bg-forest px-6 py-10 dark:bg-forest-deep">
+      <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-xl dark:bg-zinc-900">
+        <div className="mb-4 flex flex-col items-center gap-2 text-center">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-gold/15">
+            <KeyRound className="size-6 text-gold" />
+          </div>
+          <h1 className="text-lg font-black text-ink dark:text-zinc-100">
+            Set your own password
+          </h1>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Hi {profile.display_name || profile.full_name}! You're using a
+            temporary password — choose a new one before you continue.
+          </p>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <Field label="New password">
+            <Input
+              type="password"
+              value={pw1}
+              onChange={(e) => setPw1(e.target.value)}
+              placeholder="At least 6 characters"
+              autoComplete="new-password"
+              autoFocus
+            />
+          </Field>
+          <Field label="Repeat new password">
+            <Input
+              type="password"
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              autoComplete="new-password"
+            />
+          </Field>
+          {error && <Alert tone="error">{error}</Alert>}
+          <Button type="submit" size="lg" loading={busy} className="w-full">
+            Save password
+          </Button>
+          <button
+            type="button"
+            onClick={() => void supabase.auth.signOut()}
+            className="w-full text-center text-xs font-semibold text-zinc-400 hover:text-forest dark:hover:text-moss"
+          >
+            <LogOut className="mr-1 inline size-3.5" /> Sign out instead
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -65,6 +168,17 @@ export default function AppShell() {
           Sign out
         </button>
       </div>
+    );
+  }
+
+  // Signed in with a director-issued temporary password → force a change
+  // before any other screen is reachable.
+  if (profile.must_change_password) {
+    return (
+      <ForcePasswordChange
+        profile={profile}
+        refreshProfile={refreshProfile}
+      />
     );
   }
 

@@ -12,6 +12,9 @@ export const startCheckinSession = (eventId: string) =>
 export const recordAttendance = (token: string) =>
   callRpc("record_attendance", { p_token: token });
 
+export const recordAttendanceByCode = (code: string) =>
+  callRpc("record_attendance_by_code", { p_code: code });
+
 export const overrideAttendance = (
   eventId: string,
   studentId: string,
@@ -33,3 +36,12 @@ export const inviteMember = (
     p_full_name: fullName,
     p_instrument: instrument,
   });
+
+export const setBandJoinCode = (code: string) =>
+  callRpc("set_band_join_code", { p_code: code });
+
+export const getBandJoinCodeStatus = () =>
+  callRpc("get_band_join_code_status", {});
+
+export const validateBandJoinCode = (code: string) =>
+  callRpc("validate_band_join_code", { p_code: code });

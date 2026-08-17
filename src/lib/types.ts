@@ -9,6 +9,7 @@ export interface Profile {
   instrument: string;
   role: Role;
   avatar_url: string;
+  must_change_password: boolean;
   created_at: string;
 }
 
@@ -61,10 +62,12 @@ export interface RpcResult {
   ok: boolean;
   message?: string;
   token?: string;
+  entry_code?: string;
   expires_at?: string;
   event_id?: string;
   event_name?: string;
   checked_in_at?: string | null;
   temp_password?: string;
   member_id?: string;
+  enabled?: boolean;
 }

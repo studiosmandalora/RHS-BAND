@@ -22,25 +22,58 @@
 create type public.app_role as enum ('student', 'section_leader', 'director');
 
 create table public.profiles (
-  id           uuid primary key references auth.users (id) on delete cascade,
-  full_name    text not null default '',
-  display_name text not null default '',
-  instrument   text not null default '',
-  role         public.app_role not null default 'student',
-  avatar_url   text not null default '',
-  created_at   timestamptz not null default now()
+  id                   uuid primary key references auth.users (id) on delete cascade,
+  full_name            text not null default '',
+  display_name         text not null default '',
+  instrument           text not null default '',
+  role                 public.app_role not null default 'student',
+  avatar_url           text not null default '',
+  must_change_password boolean not null default false,
+  created_at           timestamptz not null default now()
 );
 
 -- Auto-create the profiles row on signup (role always starts as 'student').
 -- Promotion happens only via the Roster screen (director) — there is no way
 -- for a user to self-assign a staff role.
+--
+-- Self-signup is gated by the band join code: if the director has set one
+-- (app_settings.band_join_code), a profile is only created when the signup's
+-- raw_user_meta_data.band_join_code matches. A wrong/missing code means the
+-- account exists but has no profile → the app shows "not on the roster".
+-- Director-invited members (invite_member sets raw_app_meta_data
+-- .invited_by_director, which the client cannot forge) always get a profile.
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  v_join_code text;
+  v_provided  text;
 begin
+  if coalesce(new.raw_app_meta_data ->> 'invited_by_director', 'false') = 'true' then
+    insert into public.profiles (id, full_name, display_name, instrument)
+    values (
+      new.id,
+      coalesce(new.raw_user_meta_data ->> 'full_name', ''),
+      coalesce(new.raw_user_meta_data ->> 'display_name', new.raw_user_meta_data ->> 'full_name', ''),
+      coalesce(new.raw_user_meta_data ->> 'instrument', '')
+    );
+    return new;
+  end if;
+
+  v_join_code := coalesce(
+    (select value from public.app_settings where key = 'band_join_code'),
+    ''
+  );
+  if v_join_code <> '' then
+    v_provided := coalesce(new.raw_user_meta_data ->> 'band_join_code', '');
+    if upper(v_provided) <> upper(v_join_code) then
+      return new; -- no profile → not on the roster
+    end if;
+  end if;
+
   insert into public.profiles (id, full_name, display_name, instrument)
   values (
     new.id,
@@ -80,11 +113,15 @@ create index events_date_idx on public.events (date);
 -- 3. Check-in sessions (QR codes)
 -- ---------------------------------------------------------------------------
 -- `token` is generated inside start_checkin_session() with
--- encode(gen_random_bytes(24),'hex') → 48 chars, unguessable.
+-- encode(gen_random_bytes(24),'hex') → 48 chars, unguessable. `entry_code` is
+-- a short human-readable code (6-8 chars) shown next to the QR so students
+-- whose camera fails can still check in by typing it. It's nullable so older
+-- rows (e.g. the demo seed) don't need one.
 create table public.checkin_sessions (
   id         uuid primary key default gen_random_uuid(),
   event_id   uuid not null references public.events (id) on delete cascade,
   token      text not null unique,
+  entry_code text unique,
   created_by uuid not null references public.profiles (id),
   expires_at timestamptz not null,
   created_at timestamptz not null default now()
@@ -92,6 +129,7 @@ create table public.checkin_sessions (
 
 create index checkin_sessions_event_idx on public.checkin_sessions (event_id);
 create index checkin_sessions_token_idx on public.checkin_sessions (token);
+create index checkin_sessions_entry_code_idx on public.checkin_sessions (entry_code);
 
 -- ---------------------------------------------------------------------------
 -- 4. Attendance records
@@ -309,7 +347,82 @@ create policy "chat_messages_insert_scoped"
   );
 
 -- ---------------------------------------------------------------------------
--- 8. Security-definer RPCs (the ONLY path to write attendance/codes)
+-- 8. App settings — band join code
+-- ---------------------------------------------------------------------------
+-- The join code is a shared secret the director sets/rotates from the Roster
+-- screen. RLS is enabled with NO client policies: the only code paths that can
+-- touch this table are the security-definer RPCs below, so the code itself is
+-- never exposed to the client. The client only ever sees a boolean
+-- (get_band_join_code_status) and a match check (validate_band_join_code).
+create table public.app_settings (
+  key   text primary key,
+  value text not null default ''
+);
+
+alter table public.app_settings enable row level security;
+-- intentionally NO policies: security-definer RPCs only.
+
+-- Director sets/rotates (or clears with '') the join code.
+create or replace function public.set_band_join_code(p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid  uuid := auth.uid();
+  v_code text := trim(p_code);
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  if (select public.user_role()) <> 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Only directors can change the join code.');
+  end if;
+  insert into public.app_settings (key, value)
+  values ('band_join_code', v_code)
+  on conflict (key) do update set value = excluded.value;
+  return jsonb_build_object('ok', true, 'message', 'Join code updated.');
+end;
+$$;
+
+-- Whether a join code is currently required (boolean only — never the code).
+create or replace function public.get_band_join_code_status()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'ok', true,
+    'enabled', coalesce(
+      (select value from public.app_settings where key = 'band_join_code'), ''
+    ) <> ''
+  );
+$$;
+
+-- Pre-signup check so the sign-in screen can reject a bad code before creating
+-- an account. Callable by anon (no session needed). Returns ok=true when no
+-- code is required or when the code matches.
+create or replace function public.validate_band_join_code(p_code text)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'ok',
+    coalesce((select value from public.app_settings where key = 'band_join_code'), '') = ''
+    or upper(coalesce(p_code, '')) = upper(
+      coalesce((select value from public.app_settings where key = 'band_join_code'), '')
+    )
+  );
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 9. Security-definer RPCs (the ONLY path to write attendance/codes)
 -- ---------------------------------------------------------------------------
 
 -- Staff start a 60-second live code for an event. Issuing a new code for the
@@ -321,10 +434,11 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  v_uid     uuid := auth.uid();
-  v_role    public.app_role := public.user_role();
-  v_token   text;
-  v_expires timestamptz;
+  v_uid       uuid := auth.uid();
+  v_role      public.app_role := public.user_role();
+  v_token     text;
+  v_entry     text;
+  v_expires   timestamptz;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Sign in to generate a code.');
@@ -338,18 +452,27 @@ begin
 
   delete from public.checkin_sessions where event_id = p_event_id;
 
-  insert into public.checkin_sessions (event_id, created_by, token, expires_at)
+  -- 8-char code from an unambiguous alphabet (no 0/O, 1/I/L) for manual entry.
+  v_entry := (
+    select string_agg(
+      substr('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', (random() * 32)::int + 1, 1), '')
+    from generate_series(1, 8)
+  );
+
+  insert into public.checkin_sessions (event_id, created_by, token, entry_code, expires_at)
   values (
     p_event_id,
     v_uid,
     encode(gen_random_bytes(24), 'hex'),
+    v_entry,
     now() + interval '60 seconds'
   )
-  returning token, expires_at into v_token, v_expires;
+  returning token, entry_code, expires_at into v_token, v_entry, v_expires;
 
   return jsonb_build_object(
     'ok', true,
     'token', v_token,
+    'entry_code', v_entry,
     'expires_at', v_expires
   );
 end;
@@ -381,6 +504,63 @@ begin
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
    where cs.token = p_token
+   limit 1;
+
+  if v_session.id is null then
+    return jsonb_build_object('ok', false, 'message', 'That code was not recognized.');
+  end if;
+
+  if v_session.expires_at <= now() then
+    return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
+  end if;
+
+  if v_session.event_date <= now() - interval '12 hours' then
+    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event.');
+  end if;
+
+  insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
+  values (v_session.event_id, v_uid, true, now())
+  on conflict (event_id, student_id)
+  do update set attended = true
+  returning * into v_record;
+
+  return jsonb_build_object(
+    'ok', true,
+    'message', 'Checked in',
+    'event_id', v_session.event_id,
+    'event_name', v_session.event_name,
+    'checked_in_at', v_record.checked_in_at
+  );
+exception
+  when others then
+    return jsonb_build_object('ok', false, 'message', 'Could not record attendance — are you on the roster?');
+end;
+$$;
+
+-- Manual fallback for students whose camera won't start: same validation as
+-- record_attendance (same checkin_sessions token/expiry rules) but keyed off
+-- the short entry_code the staff member reads aloud / displays on screen.
+create or replace function public.record_attendance_by_code(p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid      uuid := auth.uid();
+  v_session  record;
+  v_record   attendance_records%rowtype;
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
+  end if;
+
+  select cs.id, cs.event_id, cs.expires_at,
+         ev.name as event_name, ev.date as event_date
+    into v_session
+    from public.checkin_sessions cs
+    join public.events ev on ev.id = cs.event_id
+   where cs.entry_code = upper(trim(p_code))
    limit 1;
 
   if v_session.id is null then
@@ -470,8 +650,12 @@ end;
 $$;
 
 -- Director adds a member to the roster: creates the auth.user (confirmed email,
--- temporary password) and the identities link; the signup trigger then creates
--- the profiles row with role 'student'.
+-- a unique random temporary password) and the identities link; the signup
+-- trigger then creates the profiles row with role 'student'. The new member is
+-- flagged must_change_password = true so they're forced to set their own
+-- password on first sign-in. The temporary password is returned to the caller
+-- (the director) so they can hand it to the student directly — it is never
+-- stored anywhere else or logged.
 create or replace function public.invite_member(
   p_email      text,
   p_full_name  text,
@@ -487,7 +671,7 @@ declare
   v_role    public.app_role := public.user_role();
   v_user_id uuid := gen_random_uuid();
   v_email   text := lower(trim(p_email));
-  v_pw      text := 'band1234';
+  v_pw      text;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
@@ -502,6 +686,14 @@ begin
     return jsonb_build_object('ok', false, 'message', 'An account already exists for that email.');
   end if;
 
+  -- Per-user random temporary password: 12+ alphanumeric characters.
+  v_pw := (
+    select string_agg(
+      substr('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+             (random() * 62)::int + 1, 1), '')
+    from generate_series(1, 12)
+  );
+
   insert into auth.users (
     id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
     raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -514,7 +706,9 @@ begin
     v_email,
     crypt(v_pw, gen_salt('bf', 10)),
     now(),
-    '{"provider":"email","providers":["email"]}',
+    -- invited_by_director lets handle_new_user() bypass the self-signup join
+    -- code and always create a profile for director-added members.
+    '{"provider":"email","providers":["email"],"invited_by_director":true}',
     jsonb_build_object('full_name', p_full_name, 'display_name', p_full_name, 'instrument', p_instrument),
     now(),
     now()
@@ -534,11 +728,16 @@ begin
     now()
   );
 
+  -- The trigger above created the profiles row; force a password change there.
+  update public.profiles
+     set must_change_password = true
+   where id = v_user_id;
+
   return jsonb_build_object(
     'ok', true,
     'member_id', v_user_id,
     'temp_password', v_pw,
-    'message', 'Member added — temporary password: ' || v_pw
+    'message', 'Member added — share the temporary password with them directly.'
   );
 exception
   when others then
@@ -550,11 +749,15 @@ grant execute on function public.user_role() to authenticated;
 grant execute on function public.can_use_channel(uuid) to authenticated;
 grant execute on function public.start_checkin_session(uuid) to authenticated;
 grant execute on function public.record_attendance(text) to authenticated;
+grant execute on function public.record_attendance_by_code(text) to authenticated;
 grant execute on function public.override_attendance(uuid, uuid, boolean) to authenticated;
 grant execute on function public.invite_member(text, text, text) to authenticated;
+grant execute on function public.set_band_join_code(text) to authenticated;
+grant execute on function public.get_band_join_code_status() to authenticated;
+grant execute on function public.validate_band_join_code(text) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
--- 9. Storage — avatar photos
+-- 10. Storage — avatar photos
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -595,7 +798,7 @@ create policy "avatars_delete_own"
   );
 
 -- ---------------------------------------------------------------------------
--- 10. Realtime
+-- 11. Realtime
 -- ---------------------------------------------------------------------------
 -- Chat messages stream to subscribed clients and a staff member watching the
 -- Check-In screen sees check-ins arrive live.

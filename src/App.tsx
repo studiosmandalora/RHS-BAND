@@ -8,6 +8,7 @@ import CheckInScreen from "./screens/CheckInScreen";
 import NeedsSetup from "./screens/NeedsSetup";
 import ProfileScreen from "./screens/ProfileScreen";
 import RosterScreen from "./screens/RosterScreen";
+import UpdatePasswordScreen from "./screens/UpdatePasswordScreen";
 import WelcomeScreen from "./screens/WelcomeScreen";
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/welcome" element={<WelcomeScreen />} />
+      <Route path="/update-password" element={<UpdatePasswordScreen />} />
       <Route element={<AppShell />}>
         <Route index element={<CalendarScreen />} />
         <Route path="checkin" element={<CheckInScreen />} />

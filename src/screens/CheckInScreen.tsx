@@ -7,6 +7,7 @@ import {
   CameraOff,
   CheckCircle2,
   Clock,
+  Keyboard,
   MapPin,
   Music,
   QrCode,
@@ -15,15 +16,20 @@ import {
   X,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
-import { recordAttendance, startCheckinSession } from "../lib/rpc";
+import {
+  recordAttendance,
+  recordAttendanceByCode,
+  startCheckinSession,
+} from "../lib/rpc";
 import type { AttendanceRow, EventRow, Profile } from "../lib/types";
 import { fmtTime, parseTokenFromString, startOfDay } from "../lib/date";
 import { EVENT_TYPE_CHIP, EVENT_TYPE_LABEL } from "../lib/constants";
-import { Alert, Badge, Button, Card, cn } from "../components/ui";
+import { Alert, Badge, Button, Card, Modal, cn } from "../components/ui";
 import { Avatar } from "../components/Avatar";
 
 interface ActiveSession {
   token: string;
+  entry_code?: string;
   expires_at: string;
   event_id: string;
 }
@@ -50,6 +56,14 @@ export default function CheckInScreen() {
     "scanning" | "processing" | "success" | "error"
   >("scanning");
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+
+  // student: manual code fallback
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualCode, setManualCode] = useState("");
+  const [manualState, setManualState] = useState<
+    "idle" | "processing" | "success" | "error"
+  >("idle");
+  const [manualMessage, setManualMessage] = useState<string | null>(null);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const urlToken = searchParams.get("token");
@@ -166,6 +180,7 @@ export default function CheckInScreen() {
     setNowMs(Date.now());
     setSession({
       token: result.token!,
+      entry_code: result.entry_code,
       expires_at: result.expires_at!,
       event_id: nextEvent.id,
     });
@@ -188,6 +203,32 @@ export default function CheckInScreen() {
     }
     setScanState("success");
     setScanMessage(
+      `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
+    );
+    void refreshMyRecord(result.event_id);
+  }
+
+  /* ---------------------- manual code entry ------------------------------ */
+  async function submitManualCode(e: React.FormEvent) {
+    e.preventDefault();
+    const code = manualCode.trim().toUpperCase();
+    if (code.length < 6 || code.length > 8) {
+      setManualState("error");
+      setManualMessage("Codes are 6–8 characters — check it and try again.");
+      return;
+    }
+    setManualState("processing");
+    setManualMessage(null);
+    const { result, error } = await recordAttendanceByCode(code);
+    if (error || !result?.ok) {
+      setManualState("error");
+      setManualMessage(
+        error?.message ?? result?.message ?? "That code didn't work."
+      );
+      return;
+    }
+    setManualState("success");
+    setManualMessage(
       `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
     );
     void refreshMyRecord(result.event_id);
@@ -336,6 +377,19 @@ export default function CheckInScreen() {
                         Students scan this with their phone camera.
                       </p>
                     </div>
+                    {session.entry_code && !expired && (
+                      <div className="w-full rounded-2xl bg-forest/5 px-4 py-3 text-center ring-1 ring-forest/15 dark:bg-forest/20 dark:ring-forest/40">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                          Camera not working? Manual code
+                        </p>
+                        <p className="mt-1 font-mono text-3xl font-black tracking-[0.3em] text-forest dark:text-gold">
+                          {session.entry_code}
+                        </p>
+                        <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                          Students can type this on their Check-In screen.
+                        </p>
+                      </div>
+                    )}
                     <Button
                       variant={expired ? "primary" : "outline"}
                       size="sm"
@@ -402,9 +456,24 @@ export default function CheckInScreen() {
                     </div>
                   </div>
                 ) : (
-                  <Button size="lg" className="w-full" onClick={() => setScanOpen(true)}>
-                    <Camera className="size-5" /> Scan QR Code
-                  </Button>
+                  <div className="space-y-2">
+                    <Button size="lg" className="w-full" onClick={() => setScanOpen(true)}>
+                      <Camera className="size-5" /> Scan QR Code
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => {
+                        setManualCode("");
+                        setManualState("idle");
+                        setManualMessage(null);
+                        setManualOpen(true);
+                      }}
+                    >
+                      <Keyboard className="size-4" /> Camera not working? Enter code
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
@@ -482,6 +551,19 @@ export default function CheckInScreen() {
                     Try again
                   </Button>
                 </div>
+                <Button
+                  variant="gold"
+                  className="mt-3 w-full"
+                  onClick={() => {
+                    setScanOpen(false);
+                    setManualCode("");
+                    setManualState("idle");
+                    setManualMessage(null);
+                    setManualOpen(true);
+                  }}
+                >
+                  <Keyboard className="size-4" /> Enter code manually
+                </Button>
               </div>
             ) : (
               <p className="text-center text-xs text-white/60">
@@ -491,6 +573,64 @@ export default function CheckInScreen() {
           </div>
         </div>
       )}
+
+      {/* manual code entry fallback */}
+      <Modal
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        title={manualState === "success" ? "Checked in" : "Enter check-in code"}
+      >
+        {manualState === "success" ? (
+          <div className="text-center">
+            <CheckCircle2 className="mx-auto mb-2 size-10 text-forest dark:text-gold" />
+            <p className="text-base font-black text-ink dark:text-zinc-100">
+              You're checked in!
+            </p>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {manualMessage}
+            </p>
+            <Button className="mt-5 w-full" onClick={() => setManualOpen(false)}>
+              Done
+            </Button>
+          </div>
+        ) : (
+          <form onSubmit={submitManualCode} className="space-y-4">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              The staff member at the door shows a short code on their screen.
+              Type it here to check in.
+            </p>
+            <input
+              value={manualCode}
+              onChange={(e) => {
+                setManualCode(
+                  e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")
+                );
+                if (manualState === "error") {
+                  setManualState("idle");
+                  setManualMessage(null);
+                }
+              }}
+              placeholder="e.g. K7Q2P3M9"
+              maxLength={8}
+              autoCapitalize="characters"
+              autoComplete="off"
+              autoFocus
+              className="w-full min-h-13 rounded-xl bg-cream px-4 text-center font-mono text-2xl font-black tracking-[0.35em] text-ink placeholder:text-zinc-300 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10 dark:focus:ring-mid"
+            />
+            {manualState === "error" && manualMessage && (
+              <Alert tone="error">{manualMessage}</Alert>
+            )}
+            <Button
+              type="submit"
+              size="lg"
+              loading={manualState === "processing"}
+              className="w-full"
+            >
+              Check in
+            </Button>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }

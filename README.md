@@ -27,7 +27,13 @@ Open the **SQL Editor** and run these two files, in order:
 
 1. `supabase/schema.sql` — tables, RLS policies, security-definer RPCs,
    triggers, avatar storage bucket, realtime publication.
-2. `supabase/seed.sql` — demo users, events, attendance history, chat channels.
+2. `supabase/seed.sql` — demo users, events, attendance history, chat channels
+   (local dev/demoing only).
+
+For the **real production database**, run `supabase/seed-production.sql`
+instead of `seed.sql` — it creates only a single director account (no fake
+students or events). Change the placeholder email/password first; the account
+is flagged to force a real password on first sign-in.
 
 > If the realtime `alter publication` lines error, it's harmless — just enable
 > Realtime per table from **Table editor → (table) → Realtime** for
@@ -45,6 +51,10 @@ npm run dev
 Open http://localhost:5173 — you should land on the sign-in screen.
 
 ## Demo accounts
+
+The demo quick-fill list on the sign-in screen is **dev-only**: it renders only
+when `VITE_SHOW_DEMO_ACCOUNTS=true` in `.env`. Leave it unset (or `false`) in
+production so demo credentials never ship.
 
 All use the password **`band1234`** (there's a quick-fill list on the sign-in screen):
 
@@ -90,6 +100,22 @@ Everything is enforced in Postgres, not just hidden in the UI:
   subscription can't leak other sections' messages.
 - **Avatars** upload to a public `avatars` bucket, but only to your own
   `{user_id}/...` folder.
+- **Self-signup is gated by a band join code.** The director sets/rotates the
+  code from Roster → Band join code. It's stored in `app_settings` with RLS on
+  and no client policies, so the code is never exposed to the browser; the
+  client only gets a boolean status and a match check. `handle_new_user` only
+  creates a profile when the signup's code matches (or when the user was
+  director-invited via `invite_member`, which sets a non-forgeable
+  `raw_app_meta_data` flag). Wrong/missing code → account exists but shows
+  "not on the roster".
+- **Director-added members get a unique random temporary password** (12+
+  alphanumeric chars), flagged `must_change_password = true` so they're forced
+  to set their own on first sign-in. The temp password is returned to the
+  director only, never stored or logged.
+- **Check-in has a manual fallback.** Each session also gets a short 8-char
+  `entry_code` displayed on the staff screen; students whose camera fails can
+  type it in (validated against the same token/expiry rules via
+  `record_attendance_by_code`).
 
 ### Data model
 
