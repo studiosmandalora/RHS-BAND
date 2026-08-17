@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  MailCheck,
   MapPin,
   Music,
   Plus,
@@ -35,7 +36,15 @@ import {
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 
-function EventCard({ event }: { event: EventRow }) {
+function EventCard({
+  event,
+  onRemind,
+  reminding,
+}: {
+  event: EventRow;
+  onRemind?: (event: EventRow) => void;
+  reminding?: boolean;
+}) {
   return (
     <Card className="p-4">
       <div className="flex items-start gap-3">
@@ -66,6 +75,17 @@ function EventCard({ event }: { event: EventRow }) {
           )}
         </div>
       </div>
+      {onRemind && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-3 w-full"
+          loading={reminding}
+          onClick={() => onRemind(event)}
+        >
+          <MailCheck className="size-4" /> Remind absent members
+        </Button>
+      )}
     </Card>
   );
 }
@@ -73,6 +93,7 @@ function EventCard({ event }: { event: EventRow }) {
 export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const canAdd = profile.role === "director" || profile.role === "section_leader";
+  const isDirector = profile.role === "director";
 
   const now = new Date();
   const [cursor, setCursor] = useState(
@@ -90,6 +111,13 @@ export default function CalendarScreen() {
   const [location, setLocation] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // director: email reminders for absent members
+  const [remindingId, setRemindingId] = useState<string | null>(null);
+  const [remindMsg, setRemindMsg] = useState<{
+    tone: "success" | "error";
+    text: string;
+  } | null>(null);
 
   async function loadEvents() {
     setLoading(true);
@@ -155,6 +183,35 @@ export default function CalendarScreen() {
     setDate("");
     setLocation("");
     void loadEvents();
+  }
+
+  async function remind(event: EventRow) {
+    setRemindMsg(null);
+    setRemindingId(event.id);
+    try {
+      const { data, error } = await supabase.functions.invoke(
+        "send_signup_reminder",
+        { body: { event_id: event.id } }
+      );
+      if (error) throw error;
+      const res = data as {
+        ok?: boolean;
+        message?: string;
+      } | null;
+      setRemindMsg({
+        tone: res?.ok ? "success" : "error",
+        text:
+          res?.message ??
+          (res?.ok ? "Reminder sent." : "Couldn't send the reminder."),
+      });
+    } catch (e) {
+      setRemindMsg({
+        tone: "error",
+        text: e instanceof Error ? e.message : "Couldn't send the reminder.",
+      });
+    } finally {
+      setRemindingId(null);
+    }
   }
 
   function openAdd() {
@@ -277,11 +334,23 @@ export default function CalendarScreen() {
             subtitle={canAdd ? "Tap “Add event” to schedule something." : undefined}
           />
         ) : (
-          <div className="space-y-2">
-            {dayEvents.map((ev) => (
-              <EventCard key={ev.id} event={ev} />
-            ))}
-          </div>
+          <>
+            {remindMsg && (
+              <Alert tone={remindMsg.tone} className="mb-3">
+                {remindMsg.text}
+              </Alert>
+            )}
+            <div className="space-y-2">
+              {dayEvents.map((ev) => (
+                <EventCard
+                  key={ev.id}
+                  event={ev}
+                  onRemind={isDirector ? remind : undefined}
+                  reminding={remindingId === ev.id}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
 

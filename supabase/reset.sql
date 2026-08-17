@@ -20,6 +20,9 @@ drop table if exists public.chat_messages cascade;
 drop table if exists public.chat_channels cascade;
 drop table if exists public.events cascade;
 drop table if exists public.app_settings cascade;
+drop table if exists public.notifications cascade;
+drop table if exists public.checkin_attempts cascade;
+drop table if exists public.join_code_attempts cascade;
 drop table if exists public.profiles cascade;
 
 drop type if exists public.app_role cascade;

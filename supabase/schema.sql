@@ -34,8 +34,15 @@ create table if not exists public.profiles (
   role                 public.app_role not null default 'student',
   avatar_url           text not null default '',
   must_change_password boolean not null default false,
+  -- Soft-deactivation: the director can disable a member's sign-in without
+  -- deleting their profile or attendance history (see deactivate_member /
+  -- reactivate_member). Kept in sync with auth.users.banned_until by the RPCs.
+  deactivated          boolean not null default false,
   created_at           timestamptz not null default now()
 );
+
+-- Idempotent migration for databases created before `deactivated` existed.
+alter table public.profiles add column if not exists deactivated boolean not null default false;
 
 -- Auto-create the profiles row on signup (role always starts as 'student').
 -- Promotion happens only via the Roster screen (director) — there is no way
@@ -108,7 +115,10 @@ create table if not exists public.events (
   type       text not null check (type in ('rehearsal', 'game', 'concert')),
   date       timestamptz not null,
   location   text not null default '',
-  created_by uuid not null references public.profiles (id),
+  -- Informational only (the RLS insert policy just requires it to be the
+  -- current user). Nullable so an event survives if its creator is later
+  -- removed from the roster.
+  created_by uuid references public.profiles (id) on delete set null,
   created_at timestamptz not null default now()
 );
 
@@ -127,7 +137,7 @@ create table if not exists public.checkin_sessions (
   event_id   uuid not null references public.events (id) on delete cascade,
   token      text not null unique,
   entry_code text unique,
-  created_by uuid not null references public.profiles (id),
+  created_by uuid not null references public.profiles (id) on delete cascade,
   expires_at timestamptz not null,
   created_at timestamptz not null default now()
 );
@@ -135,6 +145,29 @@ create table if not exists public.checkin_sessions (
 create index if not exists checkin_sessions_event_idx on public.checkin_sessions (event_id);
 create index if not exists checkin_sessions_token_idx on public.checkin_sessions (token);
 create index if not exists checkin_sessions_entry_code_idx on public.checkin_sessions (entry_code);
+
+-- ---------------------------------------------------------------------------
+-- 3b. Referential actions when a member is removed from the roster
+-- ---------------------------------------------------------------------------
+-- Directors remove a member by deleting their profiles row (Roster screen).
+-- That delete would fail on the FK constraints below whenever the member ever
+-- created events or check-in sessions, so:
+--   * events           → SET NULL: the event stays on the calendar, its
+--                        created_by simply becomes null
+--   * checkin_sessions → CASCADE: ephemeral 60-second codes die with creator
+-- These statements are idempotent: re-running schema.sql on an existing
+-- database applies the same behavior without erroring.
+alter table public.events
+  drop constraint if exists events_created_by_fkey,
+  add constraint events_created_by_fkey
+    foreign key (created_by) references public.profiles (id) on delete set null;
+alter table public.events
+  alter column created_by drop not null;
+
+alter table public.checkin_sessions
+  drop constraint if exists checkin_sessions_created_by_fkey,
+  add constraint checkin_sessions_created_by_fkey
+    foreign key (created_by) references public.profiles (id) on delete cascade;
 
 -- ---------------------------------------------------------------------------
 -- 4. Attendance records
@@ -150,6 +183,29 @@ create table if not exists public.attendance_records (
 
 create index if not exists attendance_records_student_idx on public.attendance_records (student_id);
 create index if not exists attendance_records_event_idx on public.attendance_records (event_id);
+
+-- ---------------------------------------------------------------------------
+-- 4b. Check-in attempt log (rate limiting)
+-- ---------------------------------------------------------------------------
+-- One row per attempt to check in (QR scan or manual code). Written ONLY by the
+-- security-definer RPCs below — the client has no access. `event_id` is null
+-- when the code didn't resolve to a known event (e.g. a wrong manual code), so
+-- those attempts still count toward a lockout bucket. record_attendance* reject
+-- a user who has more than 5 failed attempts in the last 2 minutes for the
+-- same event (null event = the "unknown code" bucket).
+create table if not exists public.checkin_attempts (
+  id         uuid primary key default gen_random_uuid(),
+  event_id   uuid references public.events (id) on delete cascade,
+  actor_id   uuid not null references public.profiles (id) on delete cascade,
+  success    boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists checkin_attempts_actor_event_idx
+  on public.checkin_attempts (actor_id, event_id, created_at desc);
+
+-- No client policies: the only writers are the security-definer RPCs.
+alter table public.checkin_attempts enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- 5. Chat — one channel per instrument section + a General channel
@@ -187,6 +243,36 @@ set search_path = public
 as $$
   select role from public.profiles where id = auth.uid();
 $$;
+
+-- Best-effort client IP for rate limiting anonymous calls (e.g. join-code
+-- validation before signup). PostgREST exposes the request headers as a GUC;
+-- the client IP is the first entry of X-Forwarded-For (see Supabase docs,
+-- "Securing your API"). This is a throttle, not a security boundary — a
+-- determined attacker can spoof the header — but it stops casual brute-forcing.
+create or replace function public.client_ip()
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    nullif(
+      split_part(
+        coalesce(
+          current_setting('request.headers', true)::json ->> 'x-forwarded-for',
+          ''
+        ),
+        ',',
+        1
+      ),
+      ''
+    ),
+    'unknown'
+  );
+$$;
+
+grant execute on function public.client_ip() to anon, authenticated;
 
 -- Whether the current user may see/post in the given channel:
 --   directors → every channel (including General)
@@ -431,23 +517,63 @@ as $$
   );
 $$;
 
+-- Join-code brute-force protection: one row per validation attempt, keyed by
+-- the caller's best-effort IP. Written only by validate_band_join_code.
+create table if not exists public.join_code_attempts (
+  id         uuid primary key default gen_random_uuid(),
+  ip         text not null default '',
+  success    boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists join_code_attempts_ip_idx
+  on public.join_code_attempts (ip, created_at desc);
+
+-- intentionally NO policies: RPC-only.
+alter table public.join_code_attempts enable row level security;
+
 -- Pre-signup check so the sign-in screen can reject a bad code before creating
--- an account. Callable by anon (no session needed). Returns ok=true when no
--- code is required or when the code matches.
+-- an account. Callable by anon (no session needed). Logs every attempt keyed
+-- by client IP and refuses (with a friendly message) once a single IP has more
+-- than 5 failed attempts in the last 2 minutes.
 create or replace function public.validate_band_join_code(p_code text)
 returns jsonb
-language sql
-stable
+language plpgsql
 security definer
 set search_path = public
 as $$
-  select jsonb_build_object(
-    'ok',
-    coalesce((select value from public.app_settings where key = 'band_join_code'), '') = ''
-    or upper(coalesce(p_code, '')) = upper(
-      coalesce((select value from public.app_settings where key = 'band_join_code'), '')
-    )
+declare
+  v_ip       text := public.client_ip();
+  v_required text := coalesce(
+    (select value from public.app_settings where key = 'band_join_code'), ''
   );
+  v_ok       boolean;
+begin
+  v_ok := v_required = '' or upper(coalesce(p_code, '')) = upper(v_required);
+
+  -- Lockout: too many recent failures from this IP → refuse, even if the code
+  -- happens to be right now, so the throttled client can't trivially bypass.
+  if (select count(*) from public.join_code_attempts
+      where ip = v_ip
+        and success = false
+        and created_at > now() - interval '2 minutes') >= 5 then
+    insert into public.join_code_attempts (ip, success) values (v_ip, false);
+    return jsonb_build_object(
+      'ok', false,
+      'message', 'Too many attempts — try again in a minute.'
+    );
+  end if;
+
+  insert into public.join_code_attempts (ip, success) values (v_ip, v_ok);
+
+  if v_ok then
+    return jsonb_build_object('ok', true);
+  end if;
+  return jsonb_build_object(
+    'ok', false,
+    'message', 'That band join code isn''t right — ask your director for the current one.'
+  );
+end;
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -522,6 +648,8 @@ declare
   v_uid      uuid := auth.uid();
   v_session  record;
   v_record   attendance_records%rowtype;
+  v_attempt  uuid;
+  v_event_id uuid;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
@@ -534,6 +662,25 @@ begin
     join public.events ev on ev.id = cs.event_id
    where cs.token = p_token
    limit 1;
+
+  -- Bucket this attempt by the event it resolved to (null = unknown code).
+  v_event_id := v_session.event_id;
+
+  -- Rate limit: more than 5 failed attempts for this event (or the unknown-code
+  -- bucket) in the last 2 minutes → refuse.
+  if (select count(*) from public.checkin_attempts
+      where actor_id = v_uid
+        and event_id is not distinct from v_event_id
+        and success = false
+        and created_at > now() - interval '2 minutes') >= 5 then
+    insert into public.checkin_attempts (event_id, actor_id, success)
+    values (v_event_id, v_uid, false);
+    return jsonb_build_object('ok', false, 'message', 'Too many attempts — try again in a minute.');
+  end if;
+
+  insert into public.checkin_attempts (event_id, actor_id, success)
+  values (v_event_id, v_uid, false)
+  returning id into v_attempt;
 
   if v_session.id is null then
     return jsonb_build_object('ok', false, 'message', 'That code was not recognized.');
@@ -552,6 +699,8 @@ begin
   on conflict (event_id, student_id)
   do update set attended = true
   returning * into v_record;
+
+  update public.checkin_attempts set success = true where id = v_attempt;
 
   return jsonb_build_object(
     'ok', true,
@@ -579,6 +728,8 @@ declare
   v_uid      uuid := auth.uid();
   v_session  record;
   v_record   attendance_records%rowtype;
+  v_attempt  uuid;
+  v_event_id uuid;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
@@ -591,6 +742,25 @@ begin
     join public.events ev on ev.id = cs.event_id
    where cs.entry_code = upper(trim(p_code))
    limit 1;
+
+  -- Bucket this attempt by the event it resolved to (null = unknown code).
+  v_event_id := v_session.event_id;
+
+  -- Rate limit: more than 5 failed attempts for this event (or the unknown-code
+  -- bucket) in the last 2 minutes → refuse.
+  if (select count(*) from public.checkin_attempts
+      where actor_id = v_uid
+        and event_id is not distinct from v_event_id
+        and success = false
+        and created_at > now() - interval '2 minutes') >= 5 then
+    insert into public.checkin_attempts (event_id, actor_id, success)
+    values (v_event_id, v_uid, false);
+    return jsonb_build_object('ok', false, 'message', 'Too many attempts — try again in a minute.');
+  end if;
+
+  insert into public.checkin_attempts (event_id, actor_id, success)
+  values (v_event_id, v_uid, false)
+  returning id into v_attempt;
 
   if v_session.id is null then
     return jsonb_build_object('ok', false, 'message', 'That code was not recognized.');
@@ -609,6 +779,8 @@ begin
   on conflict (event_id, student_id)
   do update set attended = true
   returning * into v_record;
+
+  update public.checkin_attempts set success = true where id = v_attempt;
 
   return jsonb_build_object(
     'ok', true,
@@ -812,6 +984,269 @@ exception
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 9b. In-app notifications (bell) + realtime
+-- ---------------------------------------------------------------------------
+-- One row per notification per recipient. Rows are created ONLY by the
+-- security-definer triggers below (which run as the table owner and therefore
+-- bypass RLS), so there are no INSERT policies. Members can read and update
+-- (mark read) only their own rows.
+create table if not exists public.notifications (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  type       text not null check (type in ('new_event', 'checkin_open', 'chat_message')),
+  title      text not null,
+  body       text not null default '',
+  payload    jsonb not null default '{}'::jsonb,
+  read       boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists notifications_user_idx
+  on public.notifications (user_id, created_at desc);
+
+alter table public.notifications enable row level security;
+
+drop policy if exists "notifications_read_own" on public.notifications;
+create policy "notifications_read_own"
+  on public.notifications for select
+  to authenticated
+  using (user_id = auth.uid());
+
+drop policy if exists "notifications_update_own" on public.notifications;
+create policy "notifications_update_own"
+  on public.notifications for update
+  to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
+-- New event → notify every roster member except the creator.
+create or replace function public.notify_new_event()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.notifications (user_id, type, title, body, payload)
+  select p.id, 'new_event', 'New event added', new.name,
+         jsonb_build_object('event_id', new.id, 'event_name', new.name)
+    from public.profiles p
+   where p.id <> new.created_by;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_event_inserted on public.events;
+create trigger on_event_inserted
+  after insert on public.events
+  for each row execute function public.notify_new_event();
+
+-- Check-in window opened → notify every roster member except the issuer.
+create or replace function public.notify_checkin_open()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_name text;
+begin
+  select name into v_name from public.events where id = new.event_id;
+  insert into public.notifications (user_id, type, title, body, payload)
+  select p.id, 'checkin_open', 'Check-in is open', coalesce(v_name, 'Check-in is live'),
+         jsonb_build_object('event_id', new.event_id, 'event_name', v_name)
+    from public.profiles p
+   where p.id <> new.created_by;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_checkin_session_inserted on public.checkin_sessions;
+create trigger on_checkin_session_inserted
+  after insert on public.checkin_sessions
+  for each row execute function public.notify_checkin_open();
+
+-- New chat message → notify the channel's section members (or directors for
+-- the General channel), excluding the sender. The client marks these read when
+-- the user is already on the Chat screen.
+create or replace function public.notify_chat_message()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_section    text;
+  v_is_general boolean;
+  v_sender     text;
+begin
+  select section, is_general into v_section, v_is_general
+    from public.chat_channels where id = new.channel_id;
+
+  select display_name into v_sender from public.profiles where id = new.sender_id;
+
+  if v_is_general then
+    insert into public.notifications (user_id, type, title, body, payload)
+    select p.id, 'chat_message',
+           coalesce(v_sender, 'Band member') || ' posted in General',
+           new.text,
+           jsonb_build_object('channel_id', new.channel_id, 'sender_name', v_sender)
+      from public.profiles p
+     where p.role = 'director' and p.id <> new.sender_id;
+  else
+    insert into public.notifications (user_id, type, title, body, payload)
+    select p.id, 'chat_message',
+           coalesce(v_sender, 'Band member') || ' posted in ' || coalesce(v_section, 'your section'),
+           new.text,
+           jsonb_build_object('channel_id', new.channel_id, 'sender_name', v_sender)
+      from public.profiles p
+     where p.instrument = v_section and p.id <> new.sender_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_chat_message_inserted on public.chat_messages;
+create trigger on_chat_message_inserted
+  after insert on public.chat_messages
+  for each row execute function public.notify_chat_message();
+
+-- ---------------------------------------------------------------------------
+-- 9c. Admin tools (director-only, security definer)
+-- ---------------------------------------------------------------------------
+
+-- Director resets a member's password (e.g. a student who can't use the email
+-- reset flow). Generates a fresh random temp password, forces a change on next
+-- sign-in, and returns the password so the director can relay it directly.
+-- Also clears any ban so the reset works for a deactivated member too.
+create or replace function public.reset_member_password(p_member_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_pw  text;
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  if (select public.user_role()) <> 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Only directors can reset passwords.');
+  end if;
+  if not exists (select 1 from public.profiles where id = p_member_id) then
+    return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
+  end if;
+
+  v_pw := (
+    select string_agg(
+      substr('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+             (random() * 62)::int + 1, 1), '')
+    from generate_series(1, 12)
+  );
+
+  update auth.users
+     set encrypted_password = crypt(v_pw, gen_salt('bf', 10)),
+         banned_until = null
+   where id = p_member_id;
+
+  update public.profiles
+     set must_change_password = true
+   where id = p_member_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'temp_password', v_pw,
+    'message', 'Temporary password set — the member must change it on next sign-in.'
+  );
+exception
+  when others then
+    return jsonb_build_object('ok', false, 'message', 'Could not reset password: ' || sqlerrm);
+end;
+$$;
+
+-- Soft-deactivate: blocks sign-in (GoTrue bans the user via banned_until) and
+-- flags the profile, but keeps the member's profile and attendance history
+-- intact. Directors manage students & section leaders, never other directors.
+create or replace function public.deactivate_member(p_member_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  if (select public.user_role()) <> 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Only directors can deactivate members.');
+  end if;
+  if not exists (select 1 from public.profiles where id = p_member_id) then
+    return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
+  end if;
+  if (select role from public.profiles where id = p_member_id) = 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Directors cannot deactivate another director.');
+  end if;
+
+  update public.profiles set deactivated = true where id = p_member_id;
+  update auth.users set banned_until = now() + interval '100 years' where id = p_member_id;
+
+  return jsonb_build_object('ok', true, 'message', 'Member deactivated — they can no longer sign in.');
+end;
+$$;
+
+create or replace function public.reactivate_member(p_member_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  if (select public.user_role()) <> 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Only directors can reactivate members.');
+  end if;
+  if not exists (select 1 from public.profiles where id = p_member_id) then
+    return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
+  end if;
+  if (select role from public.profiles where id = p_member_id) = 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Directors cannot reactivate another director.');
+  end if;
+
+  update public.profiles set deactivated = false where id = p_member_id;
+  update auth.users set banned_until = null where id = p_member_id;
+
+  return jsonb_build_object('ok', true, 'message', 'Member reactivated — they can sign in again.');
+end;
+$$;
+
+-- Director-only getter for the current join code (so the Roster screen can
+-- display it). The code is a shared secret, so this is gated on role — the
+-- boolean-only get_band_join_code_status() remains the public-facing check.
+create or replace function public.get_band_join_code()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select case when (select public.user_role()) = 'director'
+    then jsonb_build_object(
+      'ok', true,
+      'code', coalesce((select value from public.app_settings where key = 'band_join_code'), '')
+    )
+    else jsonb_build_object('ok', false, 'message', 'Only directors can view the join code.')
+  end;
+$$;
+
 grant execute on function public.user_role() to authenticated;
 grant execute on function public.can_use_channel(uuid) to authenticated;
 grant execute on function public.start_checkin_session(uuid) to authenticated;
@@ -821,6 +1256,10 @@ grant execute on function public.override_attendance(uuid, uuid, boolean) to aut
 grant execute on function public.invite_member(text, text, text) to authenticated;
 grant execute on function public.set_band_join_code(text) to authenticated;
 grant execute on function public.get_band_join_code_status() to authenticated;
+grant execute on function public.get_band_join_code() to authenticated;
+grant execute on function public.reset_member_password(uuid) to authenticated;
+grant execute on function public.deactivate_member(uuid) to authenticated;
+grant execute on function public.reactivate_member(uuid) to authenticated;
 grant execute on function public.validate_band_join_code(text) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
@@ -884,5 +1323,11 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.attendance_records;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.notifications;
 exception when others then null;
 end $$;

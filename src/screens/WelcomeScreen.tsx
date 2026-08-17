@@ -71,7 +71,9 @@ export default function WelcomeScreen() {
           await validateBandJoinCode(joinCode.trim());
         if (codeErr || !codeCheck?.ok) {
           setError(
-            "That band join code isn't right — ask your director for the current one."
+            codeCheck?.message ??
+              codeErr?.message ??
+              "That band join code isn't right — ask your director for the current one."
           );
           setBusy(false);
           return;

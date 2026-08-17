@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { Html5Qrcode } from "html5-qrcode";
 import { QRCodeSVG } from "qrcode.react";
@@ -153,6 +153,22 @@ export default function CheckInScreen() {
       setRoster(map);
     });
   }, [isStaff]);
+
+  /* the roster relevant to this check-in: their section, or everyone */
+  const relevantMembers = useMemo(() => {
+    const list = Object.values(roster).filter(
+      (p) => p.role === "student" || p.role === "section_leader"
+    );
+    if (profile.role === "section_leader") {
+      return list.filter((p) => p.instrument === profile.instrument);
+    }
+    return list;
+  }, [roster, profile.role, profile.instrument]);
+
+  const checkedInIds = useMemo(
+    () => new Set(liveCheckins.map((r) => r.student_id)),
+    [liveCheckins]
+  );
 
   /* --------------------------- countdown clock --------------------------- */
   useEffect(() => {
@@ -402,32 +418,47 @@ export default function CheckInScreen() {
                 )}
                 {qrError && <Alert tone="error" className="mt-3">{qrError}</Alert>}
 
-                {/* live check-ins */}
+                {/* live check-ins: who has & hasn't checked in yet */}
                 {session && !expired && (
                   <div className="mt-4">
                     <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
-                      <Users className="size-3.5" /> Live check-ins · {liveCheckins.length}
+                      <Users className="size-3.5" /> Checked in · {checkedInIds.size} of {relevantMembers.length}
                     </p>
-                    {liveCheckins.length === 0 ? (
+                    {relevantMembers.length === 0 ? (
                       <p className="rounded-xl bg-white/60 px-3 py-2 text-xs text-zinc-400 dark:bg-zinc-800">
-                        Waiting for the first scan…
+                        No one to check in yet.
                       </p>
                     ) : (
-                      <div className="max-h-44 space-y-1.5 overflow-y-auto">
-                        {liveCheckins.map((r) => {
-                          const p = roster[r.student_id];
+                      <div className="max-h-52 space-y-1 overflow-y-auto">
+                        {relevantMembers.map((p) => {
+                          const rec = liveCheckins.find(
+                            (r) => r.student_id === p.id
+                          );
+                          const done = Boolean(rec);
                           return (
                             <div
-                              key={r.id}
-                              className="flex items-center gap-2 rounded-xl bg-white/70 px-3 py-2 dark:bg-zinc-800"
+                              key={p.id}
+                              className={
+                                "flex items-center gap-2 rounded-xl px-3 py-1.5 " +
+                                (done
+                                  ? "bg-moss/70 dark:bg-forest/40"
+                                  : "bg-white/60 dark:bg-zinc-800")
+                              }
                             >
-                              <Avatar name={p?.display_name ?? "?"} url={p?.avatar_url} size="xs" />
+                              <Avatar name={p.display_name || "?"} url={p.avatar_url} size="xs" />
                               <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
-                                {p?.display_name ?? "Student"}
+                                {p.display_name || p.full_name}
                               </span>
-                              <span className="text-[11px] text-zinc-400">
-                                {r.checked_in_at ? fmtTime(r.checked_in_at) : ""}
-                              </span>
+                              {done ? (
+                                <span className="flex items-center gap-1 text-[11px] font-bold text-forest dark:text-moss">
+                                  <CheckCircle2 className="size-3.5" />
+                                  {rec?.checked_in_at ? fmtTime(rec.checked_in_at) : "In"}
+                                </span>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-zinc-400">
+                                  Not yet
+                                </span>
+                              )}
                             </div>
                           );
                         })}

@@ -1,6 +1,13 @@
-import { useState } from "react";
-import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useState } from "react";
 import {
+  Navigate,
+  NavLink,
+  Outlet,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
+import {
+  Bell,
   CalendarDays,
   ClipboardCheck,
   KeyRound,
@@ -13,7 +20,7 @@ import {
 import { useAuth } from "../hooks/useAuth";
 import { supabase } from "../lib/supabase";
 import { Alert, Button, Field, Input, cn } from "./ui";
-import type { Profile, Role } from "../lib/types";
+import type { NotificationRow, Profile, Role } from "../lib/types";
 
 function Splash() {
   return (
@@ -127,6 +134,178 @@ function ForcePasswordChange({
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/* In-app notification bell — realtime, with an unread badge.                  */
+/* -------------------------------------------------------------------------- */
+function timeAgo(iso: string): string {
+  const min = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
+function NotificationBell({ profile }: { profile: Profile }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [notifs, setNotifs] = useState<NotificationRow[]>([]);
+  const [open, setOpen] = useState(false);
+
+  // Initial load.
+  useEffect(() => {
+    let cancelled = false;
+    supabase
+      .from("notifications")
+      .select("*")
+      .eq("user_id", profile.id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => {
+        if (!cancelled) setNotifs((data as NotificationRow[]) ?? []);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile.id]);
+
+  // Realtime: new notifications + read-state changes stream in.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`notifs-${profile.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${profile.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === "INSERT") {
+            setNotifs((prev) =>
+              [payload.new as NotificationRow, ...prev].slice(0, 50)
+            );
+          } else if (payload.eventType === "UPDATE") {
+            const updated = payload.new as NotificationRow;
+            setNotifs((prev) =>
+              prev.map((n) => (n.id === updated.id ? updated : n))
+            );
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [profile.id]);
+
+  // Already on the Chat screen? Chat notifications are auto-read so the badge
+  // only reflects messages you'd have missed.
+  useEffect(() => {
+    if (!location.pathname.startsWith("/chat")) return;
+    const ids = notifs
+      .filter((n) => n.type === "chat_message" && !n.read)
+      .map((n) => n.id);
+    if (ids.length === 0) return;
+    void supabase.from("notifications").update({ read: true }).in("id", ids);
+    setNotifs((prev) =>
+      prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n))
+    );
+  }, [location.pathname, notifs]);
+
+  const unreadCount = notifs.filter((n) => !n.read).length;
+
+  function markAllRead() {
+    const ids = notifs.filter((n) => !n.read).map((n) => n.id);
+    if (ids.length === 0) return;
+    void supabase.from("notifications").update({ read: true }).in("id", ids);
+    setNotifs((prev) =>
+      prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n))
+    );
+  }
+
+  function openNotification(n: NotificationRow) {
+    setOpen(false);
+    if (n.type === "new_event") navigate("/calendar");
+    else if (n.type === "checkin_open") navigate("/checkin");
+    else if (n.type === "chat_message") navigate("/chat");
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="relative rounded-full p-2 text-zinc-500 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        aria-label={`Notifications${unreadCount ? ` (${unreadCount} unread)` : ""}`}
+      >
+        <Bell className="size-5" />
+        {unreadCount > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-4 text-white">
+            {unreadCount > 9 ? "9+" : unreadCount}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <>
+          <button
+            aria-label="Close notifications"
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl bg-white shadow-xl ring-1 ring-black/10 dark:bg-zinc-900 dark:ring-white/10">
+            <div className="flex items-center justify-between border-b border-black/5 px-4 py-2.5 dark:border-white/10">
+              <p className="text-sm font-bold text-ink dark:text-zinc-100">
+                Notifications
+              </p>
+              <button
+                onClick={markAllRead}
+                className="text-xs font-semibold text-zinc-400 hover:text-forest dark:hover:text-moss"
+              >
+                Mark all read
+              </button>
+            </div>
+            <div className="max-h-72 overflow-y-auto">
+              {notifs.length === 0 ? (
+                <p className="px-4 py-8 text-center text-xs text-zinc-400">
+                  No notifications yet.
+                </p>
+              ) : (
+                notifs.map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={() => openNotification(n)}
+                    className={cn(
+                      "flex w-full items-start gap-2.5 px-4 py-3 text-left transition-colors hover:bg-cream dark:hover:bg-zinc-800",
+                      !n.read && "bg-moss/30 dark:bg-forest/20"
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-ink dark:text-zinc-100">
+                        {n.title}
+                      </p>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {n.body}
+                      </p>
+                      <p className="mt-1 text-[10px] font-semibold uppercase text-zinc-400">
+                        {timeAgo(n.created_at)}
+                      </p>
+                    </div>
+                    {!n.read && (
+                      <span className="mt-1.5 size-2 shrink-0 rounded-full bg-gold" />
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const TABS: { to: string; label: string; icon: typeof CalendarDays; roles: Role[] }[] =
   [
     { to: "/", label: "Calendar", icon: CalendarDays, roles: ["student", "section_leader", "director"] },
@@ -182,11 +361,43 @@ export default function AppShell() {
     );
   }
 
+  // Deactivated by the director (soft-delete): block the app even if a
+  // session outlived the deactivation.
+  if (profile.deactivated) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-cream px-6 text-center dark:bg-zinc-950">
+        <h1 className="text-lg font-bold text-ink dark:text-zinc-100">
+          Account deactivated
+        </h1>
+        <p className="max-w-xs text-sm text-zinc-500 dark:text-zinc-400">
+          Your account has been deactivated by the director. Contact them if
+          you think this is a mistake.
+        </p>
+        <button
+          onClick={() => void supabase.auth.signOut()}
+          className="rounded-full bg-forest px-5 py-2.5 text-sm font-semibold text-white hover:bg-mid"
+        >
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
   const role = profile.role;
   const tabs = TABS.filter((t) => t.roles.includes(role));
 
   return (
     <div className="flex h-dvh flex-col bg-cream dark:bg-zinc-950">
+      {/* Top bar with notification bell */}
+      <header className="shrink-0 border-b border-black/5 bg-white/95 backdrop-blur dark:border-white/10 dark:bg-zinc-900/95">
+        <div className="mx-auto flex h-12 w-full max-w-3xl items-center justify-between px-4">
+          <p className="text-sm font-black tracking-tight text-forest dark:text-gold">
+            RHS Band
+          </p>
+          <NotificationBell profile={profile} />
+        </div>
+      </header>
+
       {/* Content scrolls; the tab bar stays pinned to the bottom */}
       <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
         <div className="mx-auto h-full w-full max-w-3xl">

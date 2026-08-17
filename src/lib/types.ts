@@ -10,6 +10,8 @@ export interface Profile {
   role: Role;
   avatar_url: string;
   must_change_password: boolean;
+  /** Soft-deactivated by the director — can't sign in, history kept. */
+  deactivated: boolean;
   created_at: string;
 }
 
@@ -57,6 +59,24 @@ export interface MessageRow {
   created_at: string;
 }
 
+export type NotificationType = "new_event" | "checkin_open" | "chat_message";
+
+export interface NotificationRow {
+  id: string;
+  user_id: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  payload: {
+    event_id?: string;
+    event_name?: string;
+    channel_id?: string;
+    sender_name?: string;
+  };
+  read: boolean;
+  created_at: string;
+}
+
 /** Shape returned by all the security-definer RPC functions. */
 export interface RpcResult {
   ok: boolean;
@@ -70,4 +90,5 @@ export interface RpcResult {
   temp_password?: string;
   member_id?: string;
   enabled?: boolean;
+  code?: string;
 }

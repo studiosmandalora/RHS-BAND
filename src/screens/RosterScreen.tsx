@@ -1,10 +1,23 @@
 import { useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
-import { KeyRound, ShieldCheck, Trash2, UserPlus, Users } from "lucide-react";
+import {
+  Copy,
+  KeyRound,
+  Power,
+  RefreshCw,
+  ShieldCheck,
+  UserCheck,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
+  deactivateMember,
+  getBandJoinCode,
   getBandJoinCodeStatus,
   inviteMember,
+  reactivateMember,
+  resetMemberPassword,
   setBandJoinCode,
 } from "../lib/rpc";
 import type { Profile } from "../lib/types";
@@ -22,6 +35,15 @@ import {
 } from "../components/ui";
 import { Avatar } from "../components/Avatar";
 
+/** Short un-ambiguous code (no 0/O, 1/I/L) for the "Rotate code" button. */
+function randomCode(len = 8): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out = "";
+  for (let i = 0; i < len; i++)
+    out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
 export default function RosterScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isDirector = profile.role === "director";
@@ -36,8 +58,16 @@ export default function RosterScreen() {
   const [addInstrument, setAddInstrument] = useState<string>(INSTRUMENTS[0]);
   const [adding, setAdding] = useState(false);
 
+  // member actions (deactivate / reactivate / reset password)
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [resetPw, setResetPw] = useState<{
+    member: Profile;
+    tempPassword: string;
+  } | null>(null);
+
   // band join code (director only)
   const [joinCodeEnabled, setJoinCodeEnabled] = useState<boolean | null>(null);
+  const [currentCode, setCurrentCode] = useState("");
   const [joinCode, setJoinCode] = useState("");
   const [savingJoinCode, setSavingJoinCode] = useState(false);
   const [joinMsg, setJoinMsg] = useState<{
@@ -84,20 +114,52 @@ export default function RosterScreen() {
     else void load();
   }
 
-  async function removeMember(member: Profile) {
+  /* ----------------------- deactivate / reactivate ----------------------- */
+  async function deactivate(member: Profile) {
     if (
       !window.confirm(
-        `Remove ${member.display_name || member.full_name} from the roster? They won't be able to use the app anymore.`
+        `Deactivate ${member.display_name || member.full_name}? They won't be able to sign in, but their attendance history stays intact.`
       )
     )
       return;
     setError(null);
-    const { error } = await supabase
-      .from("profiles")
-      .delete()
-      .eq("id", member.id);
-    if (error) setError(error.message);
-    else void load();
+    setBusyId(member.id);
+    const { result, error } = await deactivateMember(member.id);
+    setBusyId(null);
+    if (error || !result?.ok) {
+      setError(error?.message ?? result?.message ?? "Could not deactivate.");
+      return;
+    }
+    setNotice(result.message ?? "Member deactivated.");
+    void load();
+  }
+
+  async function reactivate(member: Profile) {
+    setError(null);
+    setBusyId(member.id);
+    const { result, error } = await reactivateMember(member.id);
+    setBusyId(null);
+    if (error || !result?.ok) {
+      setError(error?.message ?? result?.message ?? "Could not reactivate.");
+      return;
+    }
+    setNotice(result.message ?? "Member reactivated.");
+    void load();
+  }
+
+  /* ------------------------- reset member password ----------------------- */
+  async function resetPassword(member: Profile) {
+    setError(null);
+    setBusyId(member.id);
+    const { result, error } = await resetMemberPassword(member.id);
+    setBusyId(null);
+    if (error || !result?.ok) {
+      setError(
+        error?.message ?? result?.message ?? "Could not reset the password."
+      );
+      return;
+    }
+    setResetPw({ member, tempPassword: result.temp_password ?? "" });
   }
 
   async function submitAdd(e: React.FormEvent) {
@@ -134,15 +196,19 @@ export default function RosterScreen() {
       if (cancelled || !result?.ok) return;
       setJoinCodeEnabled(result.enabled ?? false);
     });
+    void getBandJoinCode().then(({ result }) => {
+      if (cancelled || !result?.ok) return;
+      setCurrentCode(result.code ?? "");
+    });
     return () => {
       cancelled = true;
     };
   }, [isDirector]);
 
-  async function saveJoinCode() {
+  async function saveJoinCode(code: string) {
     setJoinMsg(null);
     setSavingJoinCode(true);
-    const { result, error } = await setBandJoinCode(joinCode.trim());
+    const { result, error } = await setBandJoinCode(code);
     setSavingJoinCode(false);
     if (error || !result?.ok) {
       setJoinMsg({
@@ -151,14 +217,37 @@ export default function RosterScreen() {
       });
       return;
     }
-    setJoinCode("");
-    setJoinCodeEnabled(joinCode.trim() !== "");
+    setCurrentCode(code);
+    setJoinCodeEnabled(code !== "");
     setJoinMsg({
       tone: "success",
-      text: joinCode.trim()
+      text: code
         ? "Join code saved. Students must enter it to create an account."
         : "Join code removed — anyone can now self-register.",
     });
+  }
+
+  async function rotateJoinCode() {
+    await saveJoinCode(randomCode());
+  }
+
+  async function copyJoinCode() {
+    if (!currentCode) {
+      setJoinMsg({
+        tone: "error",
+        text: "No join code is set yet — rotate one first.",
+      });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(currentCode);
+      setJoinMsg({ tone: "success", text: "Join code copied to clipboard." });
+    } catch {
+      setJoinMsg({
+        tone: "error",
+        text: "Couldn't copy automatically — select the code and copy manually.",
+      });
+    }
   }
 
   return (
@@ -197,11 +286,19 @@ export default function RosterScreen() {
           {members.map((m) => {
             const editable = isDirector && m.role !== "director";
             return (
-              <Card key={m.id} className="p-3.5">
+              <Card
+                key={m.id}
+                className={
+                  "p-3.5 " +
+                  (m.deactivated
+                    ? "opacity-60"
+                    : "")
+                }
+              >
                 <div className="flex items-center gap-3">
                   <Avatar name={m.display_name || m.full_name} url={m.avatar_url} size="sm" />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <p className="truncate text-sm font-bold text-ink dark:text-zinc-100">
                         {m.display_name || m.full_name}
                         {m.id === profile.id && (
@@ -213,6 +310,11 @@ export default function RosterScreen() {
                       <Badge className={ROLE_CHIP[m.role]}>
                         {ROLE_LABEL[m.role]}
                       </Badge>
+                      {m.deactivated && (
+                        <Badge className="bg-red-50 text-red-600 ring-1 ring-red-200 dark:bg-red-950/60 dark:text-red-300 dark:ring-red-900">
+                          Deactivated
+                        </Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-zinc-400">
                       {m.full_name}
@@ -222,13 +324,41 @@ export default function RosterScreen() {
                     <ShieldCheck className="size-5 text-gold" />
                   )}
                   {editable && (
-                    <button
-                      onClick={() => void removeMember(m)}
-                      className="rounded-full p-2 text-zinc-300 transition-colors hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-                      aria-label={`Remove ${m.display_name}`}
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        onClick={() => void resetPassword(m)}
+                        disabled={busyId === m.id}
+                        className="rounded-full p-2 text-zinc-400 transition-colors hover:bg-gold/15 hover:text-gold-deep disabled:opacity-40 dark:text-zinc-500 dark:hover:text-gold"
+                        aria-label={`Reset password for ${m.display_name}`}
+                        title="Reset password"
+                      >
+                        <KeyRound className="size-4" />
+                      </button>
+                      <button
+                        onClick={() =>
+                          void (m.deactivated ? reactivate(m) : deactivate(m))
+                        }
+                        disabled={busyId === m.id}
+                        className={
+                          "rounded-full p-2 transition-colors disabled:opacity-40 " +
+                          (m.deactivated
+                            ? "text-forest hover:bg-moss dark:text-moss dark:hover:bg-forest/40"
+                            : "text-zinc-300 hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400")
+                        }
+                        aria-label={
+                          m.deactivated
+                            ? `Reactivate ${m.display_name}`
+                            : `Deactivate ${m.display_name}`
+                        }
+                        title={m.deactivated ? "Reactivate" : "Deactivate"}
+                      >
+                        {m.deactivated ? (
+                          <UserCheck className="size-4" />
+                        ) : (
+                          <Power className="size-4" />
+                        )}
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -298,18 +428,51 @@ export default function RosterScreen() {
                 : "Not set — anyone can self-register"}
             </Badge>
           )}
+
+          {/* current code + copy + rotate */}
+          {joinCodeEnabled && (
+            <div className="flex items-center gap-2">
+              <code className="min-w-0 flex-1 rounded-xl bg-cream px-4 py-2.5 font-mono text-sm font-bold tracking-widest text-forest ring-1 ring-black/10 dark:bg-zinc-800 dark:text-gold dark:ring-white/10">
+                {currentCode || "••••••••"}
+              </code>
+              <Button variant="outline" size="sm" onClick={() => void copyJoinCode()}>
+                <Copy className="size-4" /> Copy
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void rotateJoinCode()}
+                loading={savingJoinCode}
+                title="Generate a new random code"
+              >
+                <RefreshCw className="size-4" /> Rotate
+              </Button>
+            </div>
+          )}
+
           <div className="flex gap-2">
             <Input
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
-              placeholder="e.g. BAND2026"
+              placeholder="Set a custom code (e.g. BAND2026)"
               autoCapitalize="characters"
               className="flex-1"
             />
-            <Button onClick={() => void saveJoinCode()} loading={savingJoinCode}>
+            <Button
+              onClick={() => void saveJoinCode(joinCode.trim())}
+              loading={savingJoinCode}
+            >
               Save
             </Button>
           </div>
+          {joinCodeEnabled && (
+            <button
+              type="button"
+              onClick={() => void saveJoinCode("")}
+              className="text-xs font-semibold text-zinc-400 hover:text-red-500"
+            >
+              Remove join code (anyone can self-register)
+            </button>
+          )}
           {joinMsg && <Alert tone={joinMsg.tone}>{joinMsg.text}</Alert>}
         </Card>
       )}
@@ -354,6 +517,47 @@ export default function RosterScreen() {
             Add to roster
           </Button>
         </form>
+      </Modal>
+
+      {/* reset password result */}
+      <Modal
+        open={resetPw !== null}
+        onClose={() => setResetPw(null)}
+        title="Temporary password"
+      >
+        {resetPw && (
+          <div className="space-y-4">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Share this temporary password with{" "}
+              <span className="font-semibold text-ink dark:text-zinc-200">
+                {resetPw.member.display_name || resetPw.member.full_name}
+              </span>{" "}
+              directly. They'll be forced to set their own password the first
+              time they sign in.
+            </p>
+            <div className="rounded-xl bg-cream px-4 py-3 text-center font-mono text-xl font-black tracking-widest text-forest ring-1 ring-black/10 dark:bg-zinc-800 dark:text-gold dark:ring-white/10">
+              {resetPw.tempPassword}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(resetPw.tempPassword);
+                  } catch {
+                    /* ignore — the code is on screen */
+                  }
+                }}
+              >
+                <Copy className="size-4" /> Copy
+              </Button>
+              <Button className="flex-1" onClick={() => setResetPw(null)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

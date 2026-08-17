@@ -43,5 +43,17 @@ export const setBandJoinCode = (code: string) =>
 export const getBandJoinCodeStatus = () =>
   callRpc("get_band_join_code_status", {});
 
+/** Director-only: returns the actual join code so it can be displayed/rotated. */
+export const getBandJoinCode = () => callRpc("get_band_join_code", {});
+
 export const validateBandJoinCode = (code: string) =>
   callRpc("validate_band_join_code", { p_code: code });
+
+export const resetMemberPassword = (memberId: string) =>
+  callRpc("reset_member_password", { p_member_id: memberId });
+
+export const deactivateMember = (memberId: string) =>
+  callRpc("deactivate_member", { p_member_id: memberId });
+
+export const reactivateMember = (memberId: string) =>
+  callRpc("reactivate_member", { p_member_id: memberId });

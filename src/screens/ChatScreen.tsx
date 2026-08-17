@@ -24,6 +24,10 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // Client-side throttle: no more than one send per 1.5s so a stuck key or an
+  // accidental double-tap can't flood the channel.
+  const lastSentAt = useRef(0);
+  const SEND_COOLDOWN_MS = 1500;
 
   const active = channels.find((c) => c.id === activeId) ?? null;
 
@@ -122,6 +126,13 @@ export default function ChatScreen() {
     e.preventDefault();
     const text = draft.trim();
     if (!text || !active || !profile) return;
+    const now = Date.now();
+    if (now - lastSentAt.current < SEND_COOLDOWN_MS) {
+      setSendError(
+        "Slow down — you can send one message every 1.5 seconds."
+      );
+      return;
+    }
     setSending(true);
     setSendError(null);
     const { error } = await supabase.from("chat_messages").insert({
@@ -134,6 +145,7 @@ export default function ChatScreen() {
       setSendError(error.message);
       return;
     }
+    lastSentAt.current = Date.now();
     setDraft("");
   }
 
@@ -261,7 +273,10 @@ export default function ChatScreen() {
       >
         <input
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (sendError) setSendError(null);
+          }}
           placeholder={`Message ${active ? active.name : "…"}`}
           maxLength={2000}
           className="min-h-11 flex-1 rounded-full bg-white px-4 text-base text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-900 dark:text-zinc-100 dark:ring-white/10"

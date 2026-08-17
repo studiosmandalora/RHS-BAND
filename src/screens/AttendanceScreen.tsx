@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
-import { Check, ClipboardCheck, Users, X } from "lucide-react";
+import { Check, ClipboardCheck, Download, Users, X } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { overrideAttendance } from "../lib/rpc";
 import type { AttendanceRow, EventRow, Profile } from "../lib/types";
@@ -14,6 +14,7 @@ export default function AttendanceScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
     profile.role === "director" || profile.role === "section_leader";
+  const isDirector = profile.role === "director";
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -122,15 +123,71 @@ export default function AttendanceScreen() {
   const myPercent = percentOf(profile.id);
   const myHistory = historyOf(profile.id);
 
+  /* --------------- director: full-roster season CSV export --------------- */
+  function exportCsv() {
+    // The whole roster (students + section leaders), regardless of the filter
+    // chip, with one column per past event plus an attendance percentage.
+    const roster = profiles.filter(
+      (p) => p.role === "student" || p.role === "section_leader"
+    );
+    const headers = [
+      "Name",
+      "Instrument",
+      ...pastEvents.map(
+        (e) => `${e.name} (${fmtDate(new Date(e.date))})`
+      ),
+      "Attendance %",
+    ];
+    const rows = roster.map((m) => {
+      const attended = records.filter(
+        (r) => r.student_id === m.id && r.attended
+      ).length;
+      const cells = pastEvents.map((ev) => {
+        const rec = records.find(
+          (r) => r.event_id === ev.id && r.student_id === m.id
+        );
+        return rec?.attended ? "Present" : "Missed";
+      });
+      const pct = pastEvents.length
+        ? Math.round((attended / pastEvents.length) * 100)
+        : 0;
+      return [
+        m.display_name || m.full_name,
+        m.instrument,
+        ...cells,
+        `${pct}%`,
+      ];
+    });
+    const escape = (v: string) =>
+      /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+    const csv = [headers, ...rows]
+      .map((row) => row.map(escape).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "attendance.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="px-4 pb-6 pt-5">
-      <div className="mb-4">
-        <h1 className="text-xl font-black text-ink dark:text-zinc-100">
-          Attendance
-        </h1>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          {pastEvents.length} past event{pastEvents.length === 1 ? "" : "s"} tracked
-        </p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-black text-ink dark:text-zinc-100">
+            Attendance
+          </h1>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {pastEvents.length} past event{pastEvents.length === 1 ? "" : "s"} tracked
+          </p>
+        </div>
+        {isDirector && pastEvents.length > 0 && (
+          <Button size="sm" variant="outline" onClick={exportCsv}>
+            <Download className="size-4" /> Export CSV
+          </Button>
+        )}
       </div>
 
       {/* personal card */}
