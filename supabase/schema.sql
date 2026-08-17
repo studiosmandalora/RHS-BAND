@@ -19,9 +19,14 @@
 -- ---------------------------------------------------------------------------
 -- 1. Roles & profiles
 -- ---------------------------------------------------------------------------
-create type public.app_role as enum ('student', 'section_leader', 'director');
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'app_role') then
+    create type public.app_role as enum ('student', 'section_leader', 'director');
+  end if;
+end $$;
 
-create table public.profiles (
+create table if not exists public.profiles (
   id                   uuid primary key references auth.users (id) on delete cascade,
   full_name            text not null default '',
   display_name         text not null default '',
@@ -97,7 +102,7 @@ create trigger on_auth_user_created
 -- ---------------------------------------------------------------------------
 -- 2. Events
 -- ---------------------------------------------------------------------------
-create table public.events (
+create table if not exists public.events (
   id         uuid primary key default gen_random_uuid(),
   name       text not null,
   type       text not null check (type in ('rehearsal', 'game', 'concert')),
@@ -107,7 +112,7 @@ create table public.events (
   created_at timestamptz not null default now()
 );
 
-create index events_date_idx on public.events (date);
+create index if not exists events_date_idx on public.events (date);
 
 -- ---------------------------------------------------------------------------
 -- 3. Check-in sessions (QR codes)
@@ -117,7 +122,7 @@ create index events_date_idx on public.events (date);
 -- a short human-readable code (6-8 chars) shown next to the QR so students
 -- whose camera fails can still check in by typing it. It's nullable so older
 -- rows (e.g. the demo seed) don't need one.
-create table public.checkin_sessions (
+create table if not exists public.checkin_sessions (
   id         uuid primary key default gen_random_uuid(),
   event_id   uuid not null references public.events (id) on delete cascade,
   token      text not null unique,
@@ -127,14 +132,14 @@ create table public.checkin_sessions (
   created_at timestamptz not null default now()
 );
 
-create index checkin_sessions_event_idx on public.checkin_sessions (event_id);
-create index checkin_sessions_token_idx on public.checkin_sessions (token);
-create index checkin_sessions_entry_code_idx on public.checkin_sessions (entry_code);
+create index if not exists checkin_sessions_event_idx on public.checkin_sessions (event_id);
+create index if not exists checkin_sessions_token_idx on public.checkin_sessions (token);
+create index if not exists checkin_sessions_entry_code_idx on public.checkin_sessions (entry_code);
 
 -- ---------------------------------------------------------------------------
 -- 4. Attendance records
 -- ---------------------------------------------------------------------------
-create table public.attendance_records (
+create table if not exists public.attendance_records (
   id           uuid primary key default gen_random_uuid(),
   event_id     uuid not null references public.events (id) on delete cascade,
   student_id   uuid not null references public.profiles (id) on delete cascade,
@@ -143,13 +148,13 @@ create table public.attendance_records (
   unique (event_id, student_id)
 );
 
-create index attendance_records_student_idx on public.attendance_records (student_id);
-create index attendance_records_event_idx on public.attendance_records (event_id);
+create index if not exists attendance_records_student_idx on public.attendance_records (student_id);
+create index if not exists attendance_records_event_idx on public.attendance_records (event_id);
 
 -- ---------------------------------------------------------------------------
 -- 5. Chat — one channel per instrument section + a General channel
 -- ---------------------------------------------------------------------------
-create table public.chat_channels (
+create table if not exists public.chat_channels (
   id         uuid primary key default gen_random_uuid(),
   name       text not null,
   slug       text not null unique,
@@ -158,7 +163,7 @@ create table public.chat_channels (
   created_at timestamptz not null default now()
 );
 
-create table public.chat_messages (
+create table if not exists public.chat_messages (
   id         uuid primary key default gen_random_uuid(),
   channel_id uuid not null references public.chat_channels (id) on delete cascade,
   sender_id  uuid not null references public.profiles (id) on delete cascade,
@@ -166,7 +171,7 @@ create table public.chat_messages (
   created_at timestamptz not null default now()
 );
 
-create index chat_messages_channel_idx on public.chat_messages (channel_id, created_at desc);
+create index if not exists chat_messages_channel_idx on public.chat_messages (channel_id, created_at desc);
 
 -- ---------------------------------------------------------------------------
 -- 6. Shared helpers (used by RLS policies and RPCs)
@@ -244,28 +249,33 @@ alter table public.chat_messages enable row level security;
 -- calendar et cetera), and may update their own row; directors can update any
 -- row. Rows are only ever created by the signup trigger; any member may be
 -- deleted by a director (removal from the roster).
+drop policy if exists "profiles_read_all_authed" on public.profiles;
 create policy "profiles_read_all_authed"
   on public.profiles for select
   to authenticated
   using (true);
 
+drop policy if exists "profiles_update_self_or_director" on public.profiles;
 create policy "profiles_update_self_or_director"
   on public.profiles for update
   to authenticated
   using (id = auth.uid() or (select public.user_role()) = 'director')
   with check (id = auth.uid() or (select public.user_role()) = 'director');
 
+drop policy if exists "profiles_delete_director" on public.profiles;
 create policy "profiles_delete_director"
   on public.profiles for delete
   to authenticated
   using ((select public.user_role()) = 'director');
 
 -- events -------------------------------------------------------------------
+drop policy if exists "events_read_all_authed" on public.events;
 create policy "events_read_all_authed"
   on public.events for select
   to authenticated
   using (true);
 
+drop policy if exists "events_insert_staff" on public.events;
 create policy "events_insert_staff"
   on public.events for insert
   to authenticated
@@ -274,11 +284,13 @@ create policy "events_insert_staff"
     and created_by = auth.uid()
   );
 
+drop policy if exists "events_update_director" on public.events;
 create policy "events_update_director"
   on public.events for update
   to authenticated
   using ((select public.user_role()) = 'director');
 
+drop policy if exists "events_delete_director" on public.events;
 create policy "events_delete_director"
   on public.events for delete
   to authenticated
@@ -288,6 +300,7 @@ create policy "events_delete_director"
 -- Issuers (staff) can read their own sessions; directors can read all (e.g.
 -- to re-display a code). Students have NO read access: the only interaction
 -- they have with tokens is by scanning and hitting record_attendance().
+drop policy if exists "checkin_sessions_read_owner_or_director" on public.checkin_sessions;
 create policy "checkin_sessions_read_owner_or_director"
   on public.checkin_sessions for select
   to authenticated
@@ -302,6 +315,7 @@ create policy "checkin_sessions_read_owner_or_director"
 -- No INSERT / UPDATE / DELETE policies at all: the client can never write
 -- attendance directly. Everything goes through record_attendance() (QR scan)
 -- or override_attendance() (staff manual toggle).
+drop policy if exists "attendance_read_self_staff" on public.attendance_records;
 create policy "attendance_read_self_staff"
   on public.attendance_records for select
   to authenticated
@@ -320,11 +334,13 @@ create policy "attendance_read_self_staff"
   );
 
 -- chat_channels ----------------------------------------------------------------
+drop policy if exists "chat_channels_visible_to_members" on public.chat_channels;
 create policy "chat_channels_visible_to_members"
   on public.chat_channels for select
   to authenticated
   using (public.can_use_channel(id)); -- director → everything; others → own section
 
+drop policy if exists "chat_channels_insert_director" on public.chat_channels;
 create policy "chat_channels_insert_director"
   on public.chat_channels for insert
   to authenticated
@@ -333,11 +349,13 @@ create policy "chat_channels_insert_director"
 -- chat_messages -------------------------------------------------------------------
 -- Read/posting is scoped by the same rule as channels. General is effectively
 -- director-only messaging; members can read/post only in their own section.
+drop policy if exists "chat_messages_read_scoped" on public.chat_messages;
 create policy "chat_messages_read_scoped"
   on public.chat_messages for select
   to authenticated
   using (public.can_use_channel(channel_id));
 
+drop policy if exists "chat_messages_insert_scoped" on public.chat_messages;
 create policy "chat_messages_insert_scoped"
   on public.chat_messages for insert
   to authenticated
@@ -354,7 +372,7 @@ create policy "chat_messages_insert_scoped"
 -- touch this table are the security-definer RPCs below, so the code itself is
 -- never exposed to the client. The client only ever sees a boolean
 -- (get_band_join_code_status) and a match check (validate_band_join_code).
-create table public.app_settings (
+create table if not exists public.app_settings (
   key   text primary key,
   value text not null default ''
 );
@@ -769,10 +787,12 @@ values (
 )
 on conflict (id) do nothing;
 
+drop policy if exists "avatars_public_read" on storage.objects;
 create policy "avatars_public_read"
   on storage.objects for select
   using (bucket_id = 'avatars');
 
+drop policy if exists "avatars_write_own" on storage.objects;
 create policy "avatars_write_own"
   on storage.objects for insert
   to authenticated
@@ -781,6 +801,7 @@ create policy "avatars_write_own"
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
+drop policy if exists "avatars_update_own" on storage.objects;
 create policy "avatars_update_own"
   on storage.objects for update
   to authenticated
@@ -789,6 +810,7 @@ create policy "avatars_update_own"
     and (storage.foldername(name))[1] = auth.uid()::text
   );
 
+drop policy if exists "avatars_delete_own" on storage.objects;
 create policy "avatars_delete_own"
   on storage.objects for delete
   to authenticated
