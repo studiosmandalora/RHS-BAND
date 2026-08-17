@@ -39,7 +39,8 @@ export default function CheckInScreen() {
   const isStaff =
     profile.role === "director" || profile.role === "section_leader";
 
-  const [nextEvent, setNextEvent] = useState<EventRow | null>(null);
+  const [upcomingEvents, setUpcomingEvents] = useState<EventRow[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
   const [myRecord, setMyRecord] = useState<AttendanceRow | null>(null);
 
   // staff: QR generation
@@ -68,7 +69,7 @@ export default function CheckInScreen() {
   const [searchParams, setSearchParams] = useSearchParams();
   const urlToken = searchParams.get("token");
 
-  /* ------------------------- next upcoming event ------------------------- */
+  /* ------------------------- upcoming events ----------------------------- */
   useEffect(() => {
     let cancelled = false;
     supabase
@@ -76,9 +77,18 @@ export default function CheckInScreen() {
       .select("*")
       .gte("date", startOfDay(new Date()).toISOString())
       .order("date", { ascending: true })
-      .limit(1)
+      .limit(20)
       .then(({ data }) => {
-        if (!cancelled) setNextEvent((data?.[0] as EventRow) ?? null);
+        if (cancelled) return;
+        const rows = (data as EventRow[]) ?? [];
+        setUpcomingEvents(rows);
+        setSelectedEvent((prev) => {
+          // Keep the current pick if it's still upcoming; otherwise default to
+          // the earliest. Two events can share a date, so we never collapse to
+          // a single "next" event.
+          if (prev && rows.some((e) => e.id === prev.id)) return prev;
+          return rows[0] ?? null;
+        });
       });
     return () => {
       cancelled = true;
@@ -87,7 +97,7 @@ export default function CheckInScreen() {
 
   /* --------------------------- my attendance ----------------------------- */
   async function refreshMyRecord(eventId?: string) {
-    const evId = eventId ?? nextEvent?.id;
+    const evId = eventId ?? selectedEvent?.id;
     if (!evId) return;
     const { data } = await supabase
       .from("attendance_records")
@@ -99,37 +109,47 @@ export default function CheckInScreen() {
   }
 
   useEffect(() => {
-    if (nextEvent) void refreshMyRecord(nextEvent.id);
+    if (selectedEvent) void refreshMyRecord(selectedEvent.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextEvent?.id]);
+  }, [selectedEvent?.id]);
+
+  /** Switch which event this screen is running check-in for. */
+  function selectEvent(ev: EventRow) {
+    setSelectedEvent(ev);
+    setQrError(null);
+    // A QR code belongs to one event — drop it when switching so a code is
+    // never shown against the wrong event's header.
+    setSession((s) => (s && s.event_id !== ev.id ? null : s));
+    if (!isStaff) void refreshMyRecord(ev.id);
+  }
 
   /* ------------------------ staff: live check-ins ------------------------ */
   useEffect(() => {
-    if (!isStaff || !nextEvent) return;
+    if (!isStaff || !selectedEvent) return;
     let cancelled = false;
     supabase
       .from("attendance_records")
       .select("*")
-      .eq("event_id", nextEvent.id)
+      .eq("event_id", selectedEvent.id)
       .then(({ data }) => {
         if (!cancelled) setLiveCheckins((data as AttendanceRow[]) ?? []);
       });
     return () => {
       cancelled = true;
     };
-  }, [isStaff, nextEvent?.id]);
+  }, [isStaff, selectedEvent?.id]);
 
   useEffect(() => {
-    if (!isStaff || !nextEvent) return;
+    if (!isStaff || !selectedEvent) return;
     const channel = supabase
-      .channel(`checkins-${nextEvent.id}`)
+      .channel(`checkins-${selectedEvent.id}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "attendance_records",
-          filter: `event_id=eq.${nextEvent.id}`,
+          filter: `event_id=eq.${selectedEvent.id}`,
         },
         (payload) => {
           setLiveCheckins((prev) => [
@@ -142,7 +162,7 @@ export default function CheckInScreen() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [isStaff, nextEvent?.id]);
+  }, [isStaff, selectedEvent?.id]);
 
   /* --------------------- staff: roster for names ------------------------- */
   useEffect(() => {
@@ -184,10 +204,10 @@ export default function CheckInScreen() {
 
   /* ------------------------------ generate ------------------------------- */
   async function generate() {
-    if (!nextEvent) return;
+    if (!selectedEvent) return;
     setGenerating(true);
     setQrError(null);
-    const { result, error } = await startCheckinSession(nextEvent.id);
+    const { result, error } = await startCheckinSession(selectedEvent.id);
     setGenerating(false);
     if (error || !result?.ok) {
       setQrError(error?.message ?? result?.message ?? "Could not generate a code.");
@@ -198,7 +218,7 @@ export default function CheckInScreen() {
       token: result.token!,
       entry_code: result.entry_code,
       expires_at: result.expires_at!,
-      event_id: nextEvent.id,
+      event_id: selectedEvent.id,
     });
   }
 
@@ -221,6 +241,9 @@ export default function CheckInScreen() {
     setScanMessage(
       `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
     );
+    // Show the event they actually checked in for (not just the earliest one).
+    const ev = upcomingEvents.find((e) => e.id === result.event_id);
+    if (ev) setSelectedEvent(ev);
     void refreshMyRecord(result.event_id);
   }
 
@@ -247,6 +270,9 @@ export default function CheckInScreen() {
     setManualMessage(
       `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
     );
+    // Show the event they actually checked in for.
+    const ev = upcomingEvents.find((e) => e.id === result.event_id);
+    if (ev) setSelectedEvent(ev);
     void refreshMyRecord(result.event_id);
   }
 
@@ -323,7 +349,7 @@ export default function CheckInScreen() {
         </p>
       </div>
 
-      {!nextEvent ? (
+      {!selectedEvent ? (
         <Card className="p-6 text-center">
           <Music className="mx-auto mb-2 size-8 text-gold" />
           <p className="text-sm font-semibold text-ink dark:text-zinc-200">
@@ -335,28 +361,48 @@ export default function CheckInScreen() {
         </Card>
       ) : (
         <>
-          {/* next event hero */}
+          {/* event picker — two events can share a date, so pick which one */}
+          {upcomingEvents.length > 1 && (
+            <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
+              {upcomingEvents.map((ev) => (
+                <button
+                  key={ev.id}
+                  onClick={() => selectEvent(ev)}
+                  className={cn(
+                    "shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors",
+                    selectedEvent?.id === ev.id
+                      ? "bg-forest text-white dark:bg-mid"
+                      : "bg-white text-zinc-500 ring-1 ring-black/5 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-white/10"
+                  )}
+                >
+                  {ev.name} · {fmtTime(ev.date)}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* selected event hero */}
           <Card className="mb-4 overflow-hidden">
             <div className="flex items-center gap-3 p-4">
-              <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-xl", EVENT_TYPE_CHIP[nextEvent.type])}>
+              <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-xl", EVENT_TYPE_CHIP[selectedEvent.type])}>
                 <Music className="size-5" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-bold text-ink dark:text-zinc-100">
-                  {nextEvent.name}
+                  {selectedEvent.name}
                 </p>
                 <p className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  <Clock className="size-3.5" /> {fmtTime(nextEvent.date)}
-                  {nextEvent.location && (
+                  <Clock className="size-3.5" /> {fmtTime(selectedEvent.date)}
+                  {selectedEvent.location && (
                     <>
                       <span>·</span>
-                      <MapPin className="size-3.5" /> {nextEvent.location}
+                      <MapPin className="size-3.5" /> {selectedEvent.location}
                     </>
                   )}
                 </p>
               </div>
-              <Badge className={EVENT_TYPE_CHIP[nextEvent.type]}>
-                {EVENT_TYPE_LABEL[nextEvent.type]}
+              <Badge className={EVENT_TYPE_CHIP[selectedEvent.type]}>
+                {EVENT_TYPE_LABEL[selectedEvent.type]}
               </Badge>
             </div>
 
