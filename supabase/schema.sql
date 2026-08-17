@@ -221,9 +221,15 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.role is distinct from old.role
-     and (select public.user_role()) <> 'director' then
-    raise exception 'Only directors can change roles';
+  if new.role is distinct from old.role then
+    if (select public.user_role()) <> 'director' then
+      raise exception 'Only directors can change roles';
+    end if;
+    -- Directors may change students and section leaders, but never another
+    -- director's role.
+    if old.role = 'director' then
+      raise exception 'Directors cannot change another director''s role';
+    end if;
   end if;
   return new;
 end;
