@@ -42,13 +42,17 @@ end $$;
 
 -- Promote to director and force a real password on first sign-in. (Runs as the
 -- SQL-editor admin role, so the role-change guard doesn't apply.)
-update public.profiles
-   set role = 'director',
-       full_name = 'Band Director',
-       display_name = 'Director',
-       instrument = '',
-       must_change_password = true
- where id = 'd1111111-1111-4111-8111-111111111111';
+-- Upsert (not plain update) so re-running after a reset re-creates the
+-- director's profile even when it was dropped — otherwise the signup trigger
+-- never fires for an already-existing auth.users row and the profile is lost.
+insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
+values ('d1111111-1111-4111-8111-111111111111', 'Band Director', 'Director', '', 'director', true)
+on conflict (id) do update
+  set role = 'director',
+      full_name = 'Band Director',
+      display_name = 'Director',
+      instrument = '',
+      must_change_password = true;
 
 -- GoTrue fails to authenticate users whose token/change columns are NULL
 -- ("Database error querying schema" on sign-in). Direct inserts into
