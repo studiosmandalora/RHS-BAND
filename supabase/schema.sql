@@ -685,11 +685,12 @@ security definer
 set search_path = public, extensions
 as $$
 declare
-  v_uid     uuid := auth.uid();
-  v_role    public.app_role := public.user_role();
-  v_user_id uuid := gen_random_uuid();
-  v_email   text := lower(trim(p_email));
-  v_pw      text;
+  v_uid      uuid := auth.uid();
+  v_role     public.app_role := public.user_role();
+  v_user_id  uuid;
+  v_email    text := lower(trim(p_email));
+  v_pw       text := null;
+  v_existing boolean;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
@@ -700,56 +701,93 @@ begin
   if v_email = '' or position('@' in v_email) = 0 then
     return jsonb_build_object('ok', false, 'message', 'Enter a valid email address.');
   end if;
-  if exists (select 1 from auth.users where email = v_email) then
-    return jsonb_build_object('ok', false, 'message', 'An account already exists for that email.');
+
+  -- If the email already has an account (self-registered or previously
+  -- invited), don't create a new one — just add them to the roster below.
+  select id into v_user_id from auth.users where email = v_email limit 1;
+  v_existing := v_user_id is not null;
+
+  if not v_existing then
+    v_user_id := gen_random_uuid();
+
+    -- Per-user random temporary password: 12+ alphanumeric characters.
+    v_pw := (
+      select string_agg(
+        substr('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+               (random() * 62)::int + 1, 1), '')
+      from generate_series(1, 12)
+    );
+
+    insert into auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+      -- GoTrue fails to authenticate users whose token/change columns are NULL
+      -- ("Database error querying schema" on sign-in), so default them to ''.
+      confirmation_token, recovery_token, email_change, email_change_token_new,
+      email_change_token_current, phone_change, phone_change_token, reauthentication_token
+    )
+    values (
+      v_user_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      v_email,
+      crypt(v_pw, gen_salt('bf', 10)),
+      now(),
+      -- invited_by_director lets handle_new_user() bypass the self-signup join
+      -- code and always create a profile for director-added members.
+      '{"provider":"email","providers":["email"],"invited_by_director":true}',
+      jsonb_build_object('full_name', p_full_name, 'display_name', p_full_name, 'instrument', p_instrument),
+      now(),
+      now(),
+      '', '', '', '', '', '', '', ''
+    );
+
+    insert into auth.identities (
+      id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
+    )
+    values (
+      v_user_id,
+      v_user_id,
+      jsonb_build_object('sub', v_user_id::text, 'email', v_email),
+      'email',
+      v_user_id::text,
+      now(),
+      now(),
+      now()
+    );
   end if;
 
-  -- Per-user random temporary password: 12+ alphanumeric characters.
-  v_pw := (
-    select string_agg(
-      substr('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
-             (random() * 62)::int + 1, 1), '')
-    from generate_series(1, 12)
-  );
-
-  insert into auth.users (
-    id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
-    raw_app_meta_data, raw_user_meta_data, created_at, updated_at
-  )
+  -- Add the member to the roster. For a brand-new user the signup trigger
+  -- already created a profile; for an existing user this is what actually
+  -- adds them to the roster. Role is intentionally left untouched on conflict
+  -- so adding someone never silently demotes a section leader.
+  insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
   values (
     v_user_id,
-    '00000000-0000-0000-0000-000000000000',
-    'authenticated',
-    'authenticated',
-    v_email,
-    crypt(v_pw, gen_salt('bf', 10)),
-    now(),
-    -- invited_by_director lets handle_new_user() bypass the self-signup join
-    -- code and always create a profile for director-added members.
-    '{"provider":"email","providers":["email"],"invited_by_director":true}',
-    jsonb_build_object('full_name', p_full_name, 'display_name', p_full_name, 'instrument', p_instrument),
-    now(),
-    now()
-  );
-
-  insert into auth.identities (
-    id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
+    p_full_name,
+    p_full_name,
+    p_instrument,
+    'student',
+    v_pw is not null  -- force a change only when we issued a temp password
   )
-  values (
-    v_user_id,
-    v_user_id,
-    jsonb_build_object('sub', v_user_id::text, 'email', v_email),
-    'email',
-    v_user_id::text,
-    now(),
-    now(),
-    now()
-  );
+  on conflict (id) do update
+    set full_name = excluded.full_name,
+        -- keep the member's own display name if they've set one
+        display_name = case
+          when public.profiles.display_name = '' then excluded.display_name
+          else public.profiles.display_name
+        end,
+        instrument = excluded.instrument,
+        must_change_password = public.profiles.must_change_password or excluded.must_change_password;
 
-  -- The trigger above created the profiles row; force a password change there.
-  update public.profiles
-     set must_change_password = true
-   where id = v_user_id;
+  if v_existing then
+    return jsonb_build_object(
+      'ok', true,
+      'member_id', v_user_id,
+      'message', 'That email already has an account — added them to the roster. They sign in with their existing password.'
+    );
+  end if;
 
   return jsonb_build_object(
     'ok', true,

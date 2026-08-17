@@ -116,7 +116,9 @@ export default function RosterScreen() {
       return;
     }
     setNotice(
-      `Member added. Give them their temporary password: ${result.temp_password} — they'll be asked to set their own on first sign-in.`
+      result.temp_password
+        ? `Member added. Give them their temporary password: ${result.temp_password} — they'll be asked to set their own on first sign-in.`
+        : "Added to the roster. That email already has an account, so they'll sign in with their existing password."
     );
     setShowAdd(false);
     setAddName("");
