@@ -635,6 +635,11 @@ begin
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
   end if;
 
+  -- Directors run the band; they don't check in.
+  if (select public.user_role()) = 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Directors don''t check in.');
+  end if;
+
   select cs.id, cs.event_id, cs.expires_at,
          ev.name as event_name, ev.date as event_date, ev.end_date as event_end
     into v_session
@@ -716,6 +721,11 @@ declare
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
+  end if;
+
+  -- Directors run the band; they don't check in.
+  if (select public.user_role()) = 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Directors don''t check in.');
   end if;
 
   select cs.id, cs.event_id, cs.expires_at,
@@ -813,6 +823,11 @@ begin
     ) then
       return jsonb_build_object('ok', false, 'message', 'You can only mark students in your own section.');
     end if;
+  end if;
+
+  -- Directors don't have attendance records.
+  if (select role from public.profiles where id = p_student_id) = 'director' then
+    return jsonb_build_object('ok', false, 'message', 'Directors don''t have attendance records.');
   end if;
 
   if not exists (select 1 from public.events where id = p_event_id) then

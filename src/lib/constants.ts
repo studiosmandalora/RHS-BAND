@@ -9,7 +9,6 @@ export const INSTRUMENTS = [
   "Trombone",
   "Baritone",
   "Percussion",
-  "Color Guard",
 ] as const;
 
 export const EVENT_TYPE_LABEL: Record<EventType, string> = {
@@ -54,6 +53,6 @@ export function demoAccounts(): { email: string; note: string }[] {
     { email: "ethan.patel@rhsband.org", note: "Percussion" },
     { email: "lily.johnson@rhsband.org", note: "Trombones" },
     { email: "diego.silva@rhsband.org", note: "Baritones" },
-    { email: "chloe.brooks@rhsband.org", note: "Color Guard" },
+    { email: "chloe.brooks@rhsband.org", note: "Flutes" },
   ];
 }

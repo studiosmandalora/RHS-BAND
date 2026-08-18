@@ -27,7 +27,7 @@ begin
       -- invited_by_director lets handle_new_user() create the profile regardless
       -- of any band join code.
       '{"provider":"email","providers":["email"],"invited_by_director":true}',
-      '{"full_name":"Band Director","display_name":"Director","instrument":""}',
+      '{"full_name":"Band Director","display_name":"Director","instrument":"Conductor"}',
       now(), now()
     );
     insert into auth.identities (
@@ -46,12 +46,12 @@ end $$;
 -- director's profile even when it was dropped — otherwise the signup trigger
 -- never fires for an already-existing auth.users row and the profile is lost.
 insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
-values ('d1111111-1111-4111-8111-111111111111', 'Band Director', 'Director', '', 'director', true)
+values ('d1111111-1111-4111-8111-111111111111', 'Band Director', 'Director', 'Conductor', 'director', true)
 on conflict (id) do update
   set role = 'director',
       full_name = 'Band Director',
       display_name = 'Director',
-      instrument = '',
+      instrument = 'Conductor',
       must_change_password = true;
 
 -- GoTrue fails to authenticate users whose token/change columns are NULL

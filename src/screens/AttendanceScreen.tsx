@@ -21,7 +21,10 @@ export default function AttendanceScreen() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
-  const [selectedId, setSelectedId] = useState<string>(profile.id);
+  // Directors don't have attendance, so don't preselect themselves.
+  const [selectedId, setSelectedId] = useState<string | null>(
+    profile.role === "director" ? null : profile.id
+  );
   const [filter, setFilter] = useState<string>("All");
   const [error, setError] = useState<string | null>(null);
 
@@ -122,8 +125,11 @@ export default function AttendanceScreen() {
     }
   }
 
-  const myPercent = percentOf(profile.id);
-  const myHistory = historyOf(profile.id);
+  // Directors don't have attendance tracked — they run the band, they don't
+  // check in. Personal card/history only applies to members.
+  const isDirectorView = profile.role === "director";
+  const myPercent = isDirectorView ? 0 : percentOf(profile.id);
+  const myHistory = isDirectorView ? [] : historyOf(profile.id);
 
   /* --------------- director: full-roster season CSV export --------------- */
   function exportCsv() {
@@ -192,57 +198,61 @@ export default function AttendanceScreen() {
         )}
       </div>
 
-      {/* personal card */}
-      <Card className="flex items-center gap-5 p-5">
-        <ProgressRing percent={myPercent}>
-          <span className="text-2xl font-black text-ink dark:text-zinc-100">
-            {myPercent}%
-          </span>
-          <span className="text-[10px] font-semibold uppercase text-zinc-400">
-            attended
-          </span>
-        </ProgressRing>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-ink dark:text-zinc-100">
-            {profile.display_name || profile.full_name}
-          </p>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            {records.filter((r) => r.student_id === profile.id && r.attended)
-              .length}{" "}
-            of {pastEvents.length} events attended
-          </p>
-          {pastEvents.length === 0 && (
-            <p className="mt-1 text-xs text-zinc-400">
-              No past events yet — attendance starts after the first one.
+      {/* personal card — directors don't track their own attendance */}
+      {!isDirectorView && (
+        <Card className="flex items-center gap-5 p-5">
+          <ProgressRing percent={myPercent}>
+            <span className="text-2xl font-black text-ink dark:text-zinc-100">
+              {myPercent}%
+            </span>
+            <span className="text-[10px] font-semibold uppercase text-zinc-400">
+              attended
+            </span>
+          </ProgressRing>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-ink dark:text-zinc-100">
+              {profile.display_name || profile.full_name}
             </p>
-          )}
-        </div>
-      </Card>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              {records.filter((r) => r.student_id === profile.id && r.attended)
+                .length}{" "}
+              of {pastEvents.length} events attended
+            </p>
+            {pastEvents.length === 0 && (
+              <p className="mt-1 text-xs text-zinc-400">
+                No past events yet — attendance starts after the first one.
+              </p>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* my history */}
-      <div className="mt-6">
-        <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
-          My history
-        </p>
-        {myHistory.length === 0 ? (
-          <EmptyState
-            icon={<ClipboardCheck className="size-6" />}
-            title="Nothing to show yet"
-            subtitle="Past events will appear here with present / missed status."
-          />
-        ) : (
-          <div className="space-y-2">
-            {myHistory.map(({ event, rec }) => (
-              <HistoryRow
-                key={event.id}
-                event={event}
-                attended={rec?.attended ?? false}
-                editable={false}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      {!isDirectorView && (
+        <div className="mt-6">
+          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
+            My history
+          </p>
+          {myHistory.length === 0 ? (
+            <EmptyState
+              icon={<ClipboardCheck className="size-6" />}
+              title="Nothing to show yet"
+              subtitle="Past events will appear here with present / missed status."
+            />
+          ) : (
+            <div className="space-y-2">
+              {myHistory.map(({ event, rec }) => (
+                <HistoryRow
+                  key={event.id}
+                  event={event}
+                  attended={rec?.attended ?? false}
+                  editable={false}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* staff roster overview */}
       {isStaff && (

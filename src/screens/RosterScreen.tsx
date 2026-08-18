@@ -360,7 +360,7 @@ export default function RosterScreen() {
                       )}
                     </div>
                     <p className="truncate text-xs text-zinc-400">
-                      {m.full_name}
+                      {m.role === "director" ? "Conductor" : m.full_name}
                     </p>
                   </div>
                   {isDirector && m.role === "director" && (

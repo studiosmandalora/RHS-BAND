@@ -52,7 +52,7 @@ begin
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
       'director@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{"provider":"email","providers":["email"]}',
-      '{"full_name":"Marissa Bennett","display_name":"Ms. Bennett","instrument":""}',
+      '{"full_name":"Marissa Bennett","display_name":"Ms. Bennett","instrument":"Conductor"}',
       now(), now()
     );
     insert into auth.identities (
@@ -220,7 +220,7 @@ begin
     );
   end if;
 
-  -- ---------- Chloe Brooks — color guard ----------
+  -- ---------- Chloe Brooks — flute ----------
   v_id := '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c';
   if not exists (select 1 from auth.users where id = v_id) then
     insert into auth.users (
@@ -230,7 +230,7 @@ begin
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
       'chloe.brooks@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
-      '{"full_name":"Chloe Brooks","display_name":"Chloe","instrument":"Color Guard"}',
+      '{"full_name":"Chloe Brooks","display_name":"Chloe","instrument":"Flute"}',
       now(), now()
     );
     insert into auth.identities (
@@ -273,7 +273,7 @@ end $$;
 -- ---------------------------------------------------------------------------
 insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
 values
-  ('d1111111-1111-4111-8111-111111111111', 'Marissa Bennett', 'Ms. Bennett', '',           'director',       false),
+  ('d1111111-1111-4111-8111-111111111111', 'Marissa Bennett', 'Ms. Bennett', 'Conductor',   'director',       false),
   ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Tyler Nguyen',    'Tyler',       'Trumpet',     'section_leader', false),
   ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Ava Rodriguez',   'Ava',         'Flute',       'student',        false),
   ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Mia Chen',        'Mia',         'Clarinet',    'student',        false),
@@ -281,7 +281,7 @@ values
   ('f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0', 'Ethan Patel',     'Ethan',       'Percussion',  'student',        false),
   ('1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', 'Lily Johnson',    'Lily',        'Trombone',    'student',        false),
   ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    'student',        false),
-  ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Color Guard', 'student',        false),
+  ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Flute',       'student',        false),
   ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            'secretary',      false)
 on conflict (id) do update
   set full_name = excluded.full_name,
