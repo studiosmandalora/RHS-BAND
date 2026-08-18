@@ -577,6 +577,14 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That event no longer exists.');
   end if;
 
+  -- Never open check-in for an event that has already ended.
+  if now() > coalesce(
+    (select end_date from public.events where id = p_event_id),
+    (select date from public.events where id = p_event_id) + interval '24 hours'
+  ) then
+    return jsonb_build_object('ok', false, 'message', 'That event has already ended — check-in is closed.');
+  end if;
+
   delete from public.checkin_sessions where event_id = p_event_id;
 
   -- 8-char code from an unambiguous alphabet (no 0/O, 1/I/L) for manual entry.
@@ -628,7 +636,7 @@ begin
   end if;
 
   select cs.id, cs.event_id, cs.expires_at,
-         ev.name as event_name, ev.date as event_date
+         ev.name as event_name, ev.date as event_date, ev.end_date as event_end
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -662,8 +670,11 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  if v_session.event_date <= now() - interval '24 hours' then
-    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event — it''s more than 24 hours old.');
+  -- Attendance is only accepted while the event is happening (or hasn't
+  -- started yet). Once it's over, the code is dead even if it's still
+  -- unexpired — no retroactive check-ins.
+  if now() > coalesce(v_session.event_end, v_session.event_date + interval '24 hours') then
+    return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
   end if;
 
   insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
@@ -708,7 +719,7 @@ begin
   end if;
 
   select cs.id, cs.event_id, cs.expires_at,
-         ev.name as event_name, ev.date as event_date
+         ev.name as event_name, ev.date as event_date, ev.end_date as event_end
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -742,8 +753,11 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  if v_session.event_date <= now() - interval '24 hours' then
-    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event — it''s more than 24 hours old.');
+  -- Attendance is only accepted while the event is happening (or hasn't
+  -- started yet). Once it's over, the code is dead even if it's still
+  -- unexpired — no retroactive check-ins.
+  if now() > coalesce(v_session.event_end, v_session.event_date + interval '24 hours') then
+    return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
   end if;
 
   insert into public.attendance_records (event_id, student_id, attended, checked_in_at)

@@ -84,7 +84,14 @@ export default function CheckInScreen() {
         .limit(20)
         .then(({ data }) => {
           if (cancelled) return;
-          const rows = (data as EventRow[]) ?? [];
+          // Only events that haven't ended yet can accept check-ins. An event
+          // is over once its end time passes (fallback: 24h after it starts).
+          const rows = ((data as EventRow[]) ?? []).filter((e) => {
+            const end = e.end_date
+              ? new Date(e.end_date).getTime()
+              : new Date(e.date).getTime() + 24 * 60 * 60 * 1000;
+            return end > Date.now();
+          });
           setUpcomingEvents(rows);
           setSelectedEvent((prev) => {
             // Keep the current pick if it's still upcoming; otherwise default to
