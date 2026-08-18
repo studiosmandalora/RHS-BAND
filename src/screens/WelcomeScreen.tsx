@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Music } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { validateBandJoinCode } from "../lib/rpc";
 import { useAuth } from "../hooks/useAuth";
@@ -146,9 +145,7 @@ export default function WelcomeScreen() {
 
       <div className="relative z-10 flex flex-1 flex-col px-6 pb-8 pt-14">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="flex size-16 items-center justify-center rounded-2xl bg-white/10 ring-1 ring-white/20">
-            <Music className="size-8 text-gold" />
-          </div>
+          <img src="/logo-dark.svg" alt="RHS Band" className="h-16 w-auto" />
           <div>
             <h1 className="text-2xl font-black tracking-tight text-white">
               RHS Band Attendance

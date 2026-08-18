@@ -162,7 +162,7 @@ create index if not exists checkin_sessions_entry_code_idx on public.checkin_ses
 -- created events or check-in sessions, so:
 --   * events           → SET NULL: the event stays on the calendar, its
 --                        created_by simply becomes null
---   * checkin_sessions → CASCADE: ephemeral 60-second codes die with creator
+--   * checkin_sessions → CASCADE: ephemeral 5-minute codes die with creator
 -- These statements are idempotent: re-running schema.sql on an existing
 -- database applies the same behavior without erroring.
 alter table public.events
@@ -542,7 +542,7 @@ $$;
 -- 8. Security-definer RPCs (the ONLY path to write attendance/codes)
 -- ---------------------------------------------------------------------------
 
--- Staff start a 60-second live code for an event. Issuing a new code for the
+-- Staff start a 5-minute live code for an event. Issuing a new code for the
 -- same event deletes the previous one → old codes are instantly invalid.
 create or replace function public.start_checkin_session(p_event_id uuid)
 returns jsonb
@@ -582,7 +582,7 @@ begin
     v_uid,
     encode(gen_random_bytes(24), 'hex'),
     v_entry,
-    now() + interval '60 seconds'
+    now() + interval '5 minutes'
   )
   returning token, entry_code, expires_at into v_token, v_entry, v_expires;
 
@@ -652,8 +652,8 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  if v_session.event_date <= now() - interval '12 hours' then
-    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event.');
+  if v_session.event_date <= now() - interval '24 hours' then
+    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event — it''s more than 24 hours old.');
   end if;
 
   insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
@@ -732,8 +732,8 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  if v_session.event_date <= now() - interval '12 hours' then
-    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event.');
+  if v_session.event_date <= now() - interval '24 hours' then
+    return jsonb_build_object('ok', false, 'message', 'That code belongs to a past event — it''s more than 24 hours old.');
   end if;
 
   insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
