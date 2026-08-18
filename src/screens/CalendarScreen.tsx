@@ -166,7 +166,7 @@ export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   // Band events come from Google Calendar; everyone can still add personal ones.
   const canAdd = false;
-  const isDirector = profile.role === "director";
+  const isDirector = profile.roles.includes("director");
 
   const now = new Date();
   const [cursor, setCursor] = useState(

@@ -38,9 +38,9 @@ interface ActiveSession {
 export default function CheckInScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
-    profile.role === "director" ||
-    profile.role === "secretary" ||
-    profile.role === "section_leader";
+    profile.roles.includes("director") ||
+    profile.roles.includes("secretary") ||
+    profile.roles.includes("section_leader");
 
   const [upcomingEvents, setUpcomingEvents] = useState<EventRow[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
@@ -189,13 +189,13 @@ export default function CheckInScreen() {
   /* the roster relevant to this check-in: their section, or everyone */
   const relevantMembers = useMemo(() => {
     const list = Object.values(roster).filter(
-      (p) => p.role === "student" || p.role === "section_leader"
+      (p) => p.roles.includes("student") || p.roles.includes("section_leader")
     );
-    if (profile.role === "section_leader") {
+    if (profile.roles.includes("section_leader")) {
       return list.filter((p) => p.instrument === profile.instrument);
     }
     return list;
-  }, [roster, profile.role, profile.instrument]);
+  }, [roster, profile.roles, profile.instrument]);
 
   const checkedInIds = useMemo(
     () => new Set(liveCheckins.map((r) => r.student_id)),

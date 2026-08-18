@@ -7,7 +7,8 @@ export interface Profile {
   full_name: string;
   display_name: string;
   instrument: string;
-  role: Role;
+  /** A person can hold several roles at once (e.g. director + secretary). */
+  roles: Role[];
   avatar_url: string;
   must_change_password: boolean;
   /** Soft-deactivated by the director — can't sign in, history kept. */

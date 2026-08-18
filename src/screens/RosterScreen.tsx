@@ -22,7 +22,7 @@ import {
   setBandJoinCode,
   updateMemberInstrument,
 } from "../lib/rpc";
-import type { Profile } from "../lib/types";
+import type { Profile, Role } from "../lib/types";
 import { INSTRUMENTS, ROLE_CHIP, ROLE_LABEL } from "../lib/constants";
 import {
   Alert,
@@ -48,8 +48,8 @@ function randomCode(len = 8): string {
 
 export default function RosterScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
-  const isDirector = profile.role === "director";
-  const isSectionLeader = profile.role === "section_leader";
+  const isDirector = profile.roles.includes("director");
+  const isSectionLeader = profile.roles.includes("section_leader");
   const canManage = isDirector || isSectionLeader;
   const [members, setMembers] = useState<Profile[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -87,7 +87,7 @@ export default function RosterScreen() {
     const rows = (data as Profile[]) ?? [];
     // section leaders: their own section only
     setMembers(
-      profile.role === "section_leader"
+      profile.roles.includes("section_leader")
         ? rows.filter((m) => m.instrument === profile.instrument)
         : rows
     );
@@ -96,16 +96,21 @@ export default function RosterScreen() {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.role]);
+  }, [profile.roles.join(",")]);
 
-  async function changeRole(
-    member: Profile,
-    role: "student" | "section_leader" | "secretary"
-  ) {
+  async function toggleRole(member: Profile, role: Role) {
     setError(null);
+    const next = member.roles.includes(role)
+      ? member.roles.filter((r) => r !== role)
+      : [...member.roles, role];
+    // Always keep at least one role — nobody can be role-less.
+    if (next.length === 0) {
+      setError("A member needs at least one role.");
+      return;
+    }
     const { error } = await supabase
       .from("profiles")
-      .update({ role })
+      .update({ roles: next })
       .eq("id", member.id);
     if (error) setError(error.message);
     else void load();
@@ -322,11 +327,11 @@ export default function RosterScreen() {
             // leaders can only change the instrument of students in their own
             // section (instrument matches theirs) — never roles, passwords,
             // deactivation, or deletion.
-            const editable = isDirector && m.role !== "director";
+            const editable = isDirector && !m.roles.includes("director");
             const canEditInstrument =
               editable ||
               (isSectionLeader &&
-                m.role === "student" &&
+                m.roles.includes("student") &&
                 m.instrument === profile.instrument);
             return (
               <Card
@@ -350,9 +355,11 @@ export default function RosterScreen() {
                           </span>
                         )}
                       </p>
-                      <Badge className={ROLE_CHIP[m.role]}>
-                        {ROLE_LABEL[m.role]}
-                      </Badge>
+                      {m.roles.map((r) => (
+                        <Badge key={r} className={ROLE_CHIP[r]}>
+                          {ROLE_LABEL[r]}
+                        </Badge>
+                      ))}
                       {m.deactivated && (
                         <Badge className="bg-red-50 text-red-600 ring-1 ring-red-200 dark:bg-red-950/60 dark:text-red-300 dark:ring-red-900">
                           Deactivated
@@ -360,10 +367,10 @@ export default function RosterScreen() {
                       )}
                     </div>
                     <p className="truncate text-xs text-zinc-400">
-                      {m.role === "director" ? "Conductor" : m.full_name}
+                      {m.roles.includes("director") ? "Conductor" : m.full_name}
                     </p>
                   </div>
-                  {isDirector && m.role === "director" && (
+                  {m.roles.includes("director") && (
                     <ShieldCheck className="size-5 text-gold" />
                   )}
                   {editable && (
@@ -433,24 +440,39 @@ export default function RosterScreen() {
                       </Field>
                     )}
                     {editable && (
-                      <Field label="Role">
-                        <Select
-                          value={m.role}
-                          onChange={(e) =>
-                            void changeRole(
-                              m,
-                              e.target.value as
-                                | "student"
-                                | "section_leader"
-                                | "secretary"
-                            )
-                          }
-                          className="!min-h-9 text-xs"
-                        >
-                          <option value="student">Student</option>
-                          <option value="section_leader">Section leader</option>
-                          <option value="secretary">Secretary</option>
-                        </Select>
+                      <Field label="Roles — tap to toggle (a person can hold several)">
+                        <div className="flex flex-wrap gap-1.5">
+                          {(
+                            [
+                              "student",
+                              "section_leader",
+                              "secretary",
+                            ] as Role[]
+                          ).map((role) => {
+                            const active = m.roles.includes(role);
+                            return (
+                              <button
+                                key={role}
+                                type="button"
+                                onClick={() => void toggleRole(m, role)}
+                                className={
+                                  "rounded-full px-3 py-1.5 text-xs font-bold transition-colors " +
+                                  (active
+                                    ? ROLE_CHIP[role]
+                                    : "bg-zinc-100 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-600 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-300")
+                                }
+                                aria-pressed={active}
+                              >
+                                {ROLE_LABEL[role]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-1 text-[11px] text-zinc-400">
+                          Everyone keeps at least one role. Directors manage
+                          roles, section leaders manage their section's
+                          instruments.
+                        </p>
                       </Field>
                     )}
                   </div>

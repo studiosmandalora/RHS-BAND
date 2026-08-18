@@ -271,23 +271,23 @@ end $$;
 --    after reset.sql) or a band join code is set. Runs as the SQL-editor admin
 --    (no auth.uid()), so the role-change guard doesn't apply.
 -- ---------------------------------------------------------------------------
-insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
+insert into public.profiles (id, full_name, display_name, instrument, roles, must_change_password)
 values
-  ('d1111111-1111-4111-8111-111111111111', 'Marissa Bennett', 'Ms. Bennett', 'Conductor',   'director',       false),
-  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Tyler Nguyen',    'Tyler',       'Trumpet',     'section_leader', false),
-  ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Ava Rodriguez',   'Ava',         'Flute',       'student',        false),
-  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Mia Chen',        'Mia',         'Clarinet',    'student',        false),
-  ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'Noah Williams',   'Noah',        'Saxophone',   'student',        false),
-  ('f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0', 'Ethan Patel',     'Ethan',       'Percussion',  'student',        false),
-  ('1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', 'Lily Johnson',    'Lily',        'Trombone',    'student',        false),
-  ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    'student',        false),
-  ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Flute',       'student',        false),
-  ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            'secretary',      false)
+  ('d1111111-1111-4111-8111-111111111111', 'Marissa Bennett', 'Ms. Bennett', 'Conductor',   '{director}',             false),
+  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Tyler Nguyen',    'Tyler',       'Trumpet',     '{section_leader}',       false),
+  ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Ava Rodriguez',   'Ava',         'Flute',       '{student}',              false),
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Mia Chen',        'Mia',         'Clarinet',    '{student}',              false),
+  ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'Noah Williams',   'Noah',        'Saxophone',   '{student}',              false),
+  ('f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0', 'Ethan Patel',     'Ethan',       'Percussion',  '{student}',              false),
+  ('1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', 'Lily Johnson',    'Lily',        'Trombone',    '{student}',              false),
+  ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    '{student}',              false),
+  ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Flute',       '{student}',              false),
+  ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            '{secretary}',            false)
 on conflict (id) do update
   set full_name = excluded.full_name,
       display_name = excluded.display_name,
       instrument = excluded.instrument,
-      role = excluded.role,
+      roles = excluded.roles,
       must_change_password = false;
 
 -- ---------------------------------------------------------------------------

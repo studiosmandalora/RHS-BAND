@@ -243,9 +243,11 @@ export default function ProfileScreen() {
           </p>
           <p className="truncate text-xs text-zinc-400">{profile.full_name}</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <Badge className={ROLE_CHIP[profile.role]}>
-              {ROLE_LABEL[profile.role]}
-            </Badge>
+            {profile.roles.map((r) => (
+              <Badge key={r} className={ROLE_CHIP[r]}>
+                {ROLE_LABEL[r]}
+              </Badge>
+            ))}
             {profile.instrument && (
               <Badge className="bg-moss text-forest dark:bg-forest/40 dark:text-moss">
                 {profile.instrument}

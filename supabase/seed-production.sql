@@ -45,10 +45,10 @@ end $$;
 -- Upsert (not plain update) so re-running after a reset re-creates the
 -- director's profile even when it was dropped — otherwise the signup trigger
 -- never fires for an already-existing auth.users row and the profile is lost.
-insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
-values ('d1111111-1111-4111-8111-111111111111', 'Band Director', 'Director', 'Conductor', 'director', true)
+insert into public.profiles (id, full_name, display_name, instrument, roles, must_change_password)
+values ('d1111111-1111-4111-8111-111111111111', 'Band Director', 'Director', 'Conductor', '{director}', true)
 on conflict (id) do update
-  set role = 'director',
+  set roles = '{director}'::public.app_role[],
       full_name = 'Band Director',
       display_name = 'Director',
       instrument = 'Conductor',

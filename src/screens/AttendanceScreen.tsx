@@ -13,17 +13,17 @@ import { ProgressRing } from "../components/ProgressRing";
 export default function AttendanceScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
-    profile.role === "director" ||
-    profile.role === "secretary" ||
-    profile.role === "section_leader";
-  const isDirector = profile.role === "director";
+    profile.roles.includes("director") ||
+    profile.roles.includes("secretary") ||
+    profile.roles.includes("section_leader");
+  const isDirector = profile.roles.includes("director");
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
   // Directors don't have attendance, so don't preselect themselves.
   const [selectedId, setSelectedId] = useState<string | null>(
-    profile.role === "director" ? null : profile.id
+    profile.roles.includes("director") ? null : profile.id
   );
   const [filter, setFilter] = useState<string>("All");
   const [error, setError] = useState<string | null>(null);
@@ -52,9 +52,9 @@ export default function AttendanceScreen() {
   const staffMembers = useMemo(() => {
     if (!isStaff) return [];
     const base = profiles.filter(
-      (p) => p.role === "student" || p.role === "section_leader"
+      (p) => p.roles.includes("student") || p.roles.includes("section_leader")
     );
-    if (profile.role === "section_leader") {
+    if (profile.roles.includes("section_leader")) {
       return base.filter((p) => p.instrument === profile.instrument);
     }
     return filter === "All"
@@ -64,7 +64,7 @@ export default function AttendanceScreen() {
 
   const filterChips = useMemo(() => {
     if (!isStaff) return [];
-    if (profile.role === "section_leader")
+    if (profile.roles.includes("section_leader"))
       return ["All", profile.instrument].filter(Boolean);
     return ["All", ...INSTRUMENTS];
   }, [isStaff, profile]);
@@ -127,7 +127,7 @@ export default function AttendanceScreen() {
 
   // Directors don't have attendance tracked — they run the band, they don't
   // check in. Personal card/history only applies to members.
-  const isDirectorView = profile.role === "director";
+  const isDirectorView = profile.roles.includes("director");
   const myPercent = isDirectorView ? 0 : percentOf(profile.id);
   const myHistory = isDirectorView ? [] : historyOf(profile.id);
 
@@ -136,7 +136,7 @@ export default function AttendanceScreen() {
     // The whole roster (students + section leaders), regardless of the filter
     // chip, with one column per past event plus an attendance percentage.
     const roster = profiles.filter(
-      (p) => p.role === "student" || p.role === "section_leader"
+      (p) => p.roles.includes("student") || p.roles.includes("section_leader")
     );
     const headers = [
       "Name",
@@ -284,7 +284,7 @@ export default function AttendanceScreen() {
               icon={<Users className="size-6" />}
               title="No members"
               subtitle={
-                profile.role === "section_leader"
+                profile.roles.includes("section_leader")
                   ? "Your section has no students yet."
                   : "Add members from the Roster tab."
               }

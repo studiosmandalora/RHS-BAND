@@ -90,10 +90,10 @@ Deno.serve(async (req) => {
     }
     const { data: profile } = await supabase
       .from("profiles")
-      .select("role")
+      .select("roles")
       .eq("id", authData.user.id)
       .maybeSingle();
-    if (profile?.role !== "director") {
+    if (!profile?.roles?.includes("director")) {
       return json({ ok: false, message: "Only directors can send reminders." }, 403);
     }
 

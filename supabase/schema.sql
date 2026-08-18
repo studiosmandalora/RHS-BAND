@@ -6,8 +6,8 @@
 --
 -- Security model:
 --   * Every table has Row Level Security enabled; roles are read from the
---     `profiles.role` column ('director' | 'section_leader' | 'secretary' |
---     'student').
+--     `profiles.roles` array column ('director' | 'section_leader' |
+--     'secretary' | 'student') — a person can hold several at once.
 --   * Attendance rows can NEVER be inserted/updated/deleted directly from the
 --     client — there are no INSERT/UPDATE/DELETE policies on
 --     attendance_records. Every write goes through a security-definer RPC
@@ -39,7 +39,8 @@ create table if not exists public.profiles (
   full_name            text not null default '',
   display_name         text not null default '',
   instrument           text not null default '',
-  role                 public.app_role not null default 'student',
+  -- A person can hold several roles at once (e.g. director + secretary).
+  roles                public.app_role[] not null default '{student}'::public.app_role[],
   avatar_url           text not null default '',
   must_change_password boolean not null default false,
   -- Soft-deactivation: the director can disable a member's sign-in without
@@ -51,6 +52,24 @@ create table if not exists public.profiles (
 
 -- Idempotent migration for databases created before `deactivated` existed.
 alter table public.profiles add column if not exists deactivated boolean not null default false;
+
+-- Idempotent migration for databases created before multi-role support: the
+-- old single `role` column becomes the `roles` array. The guard trigger and
+-- the only policy that referenced `role` directly are dropped here (they're
+-- recreated with the new column below) so the column can be dropped safely.
+drop trigger if exists profiles_guard_role_change on public.profiles;
+drop policy if exists "profiles_delete_director" on public.profiles;
+alter table public.profiles add column if not exists roles public.app_role[] not null default '{student}'::public.app_role[];
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public' and table_name = 'profiles' and column_name = 'role'
+  ) then
+    update public.profiles set roles = array[role]::public.app_role[] where role is not null;
+    alter table public.profiles drop column role;
+  end if;
+end $$;
 
 -- Auto-create the profiles row on signup (role always starts as 'student').
 -- Promotion happens only via the Roster screen (director) — there is no way
@@ -259,8 +278,33 @@ create policy "personal_events_own_all"
 -- ---------------------------------------------------------------------------
 -- 5. Shared helpers (used by RLS policies and RPCs)
 -- ---------------------------------------------------------------------------
--- The current signed-in user's role. security definer so policies can call it
--- without recursively tripping over the profiles RLS policies.
+-- The current signed-in user's full set of roles (array). security definer so
+-- policies can call it without recursively tripping over the profiles RLS
+-- policies.
+create or replace function public.user_roles()
+returns public.app_role[]
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(roles, '{student}'::public.app_role[]) from public.profiles where id = auth.uid();
+$$;
+
+-- Whether the signed-in user holds a specific role.
+create or replace function public.user_has_role(p_role public.app_role)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p_role = any(public.user_roles());
+$$;
+
+-- The user's highest-privilege role (director > secretary > section_leader >
+-- student). Kept for backward compatibility where a single role value is
+-- needed; membership checks should prefer user_has_role().
 create or replace function public.user_role()
 returns public.app_role
 language sql
@@ -268,7 +312,12 @@ stable
 security definer
 set search_path = public
 as $$
-  select role from public.profiles where id = auth.uid();
+  select case
+    when 'director' = any(public.user_roles()) then 'director'::public.app_role
+    when 'secretary' = any(public.user_roles()) then 'secretary'::public.app_role
+    when 'section_leader' = any(public.user_roles()) then 'section_leader'::public.app_role
+    else 'student'::public.app_role
+  end;
 $$;
 
 -- Best-effort client IP for rate limiting anonymous calls (e.g. join-code
@@ -301,7 +350,8 @@ $$;
 
 grant execute on function public.client_ip() to anon, authenticated;
 
--- Don't let anyone change their own (or anyone's) role unless they are a director.
+-- Don't let anyone change their own (or anyone's) roles unless they are a
+-- director. Also prevents a director from changing another director's roles.
 create or replace function public.guard_role_change()
 returns trigger
 language plpgsql
@@ -309,14 +359,14 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.role is distinct from old.role then
-    if (select public.user_role()) <> 'director' then
+  if new.roles is distinct from old.roles then
+    if not public.user_has_role('director') then
       raise exception 'Only directors can change roles';
     end if;
     -- Directors may change students, section leaders and secretaries, but
-    -- never another director's role.
-    if old.role = 'director' then
-      raise exception 'Directors cannot change another director''s role';
+    -- never another director's roles.
+    if old.roles @> '{director}'::public.app_role[] then
+      raise exception 'Directors cannot change another director''s roles';
     end if;
   end if;
   return new;
@@ -351,8 +401,8 @@ drop policy if exists "profiles_update_self_or_director" on public.profiles;
 create policy "profiles_update_self_or_director"
   on public.profiles for update
   to authenticated
-  using (id = auth.uid() or (select public.user_role()) = 'director')
-  with check (id = auth.uid() or (select public.user_role()) = 'director');
+  using (id = auth.uid() or public.user_has_role('director'))
+  with check (id = auth.uid() or public.user_has_role('director'));
 
 drop policy if exists "profiles_delete_director" on public.profiles;
 create policy "profiles_delete_director"
@@ -362,7 +412,9 @@ create policy "profiles_delete_director"
     -- Only directors may delete profiles (and with it the auth account).
     -- Directors manage students, section leaders & secretaries — never another
     -- director (or themselves).
-    (select public.user_role()) = 'director' and role <> 'director' and id <> auth.uid()
+    public.user_has_role('director')
+    and not (roles @> '{director}'::public.app_role[])
+    and id <> auth.uid()
   );
 
 -- events -------------------------------------------------------------------
@@ -377,7 +429,7 @@ create policy "events_insert_staff"
   on public.events for insert
   to authenticated
   with check (
-    (select public.user_role())::text in ('director', 'secretary')
+    (public.user_has_role('director') or public.user_has_role('secretary'))
     and created_by = auth.uid()
   );
 
@@ -385,13 +437,13 @@ drop policy if exists "events_update_director" on public.events;
 create policy "events_update_director"
   on public.events for update
   to authenticated
-  using ((select public.user_role()) = 'director');
+  using (public.user_has_role('director'));
 
 drop policy if exists "events_delete_director" on public.events;
 create policy "events_delete_director"
   on public.events for delete
   to authenticated
-  using ((select public.user_role()) = 'director');
+  using (public.user_has_role('director'));
 
 -- checkin_sessions ----------------------------------------------------------
 -- Issuers (staff) can read their own sessions; directors can read all (e.g.
@@ -403,7 +455,7 @@ create policy "checkin_sessions_read_owner_or_director"
   to authenticated
   using (
     created_by = auth.uid()
-    or (select public.user_role()) = 'director'
+    or public.user_has_role('director')
   );
 -- intentionally NO insert/update/delete policies → the only writer is the
 -- security-definer RPC start_checkin_session().
@@ -421,9 +473,9 @@ create policy "attendance_read_self_staff"
   to authenticated
   using (
     student_id = auth.uid()
-    or (select public.user_role()) in ('director', 'secretary')
+    or (public.user_has_role('director') or public.user_has_role('secretary'))
     or (
-      (select public.user_role()) = 'section_leader'
+      public.user_has_role('section_leader')
       and exists (
         select 1 from public.profiles p
         where p.id = attendance_records.student_id
@@ -463,7 +515,7 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if (select public.user_role()) <> 'director' then
+  if not public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Only directors can change the join code.');
   end if;
   insert into public.app_settings (key, value)
@@ -562,7 +614,6 @@ set search_path = public, extensions
 as $$
 declare
   v_uid       uuid := auth.uid();
-  v_role      public.app_role := public.user_role();
   v_token     text;
   v_entry     text;
   v_expires   timestamptz;
@@ -570,7 +621,7 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Sign in to generate a code.');
   end if;
-  if v_role::text not in ('director', 'section_leader', 'secretary') then
+  if not (public.user_has_role('director') or public.user_has_role('section_leader') or public.user_has_role('secretary')) then
     return jsonb_build_object('ok', false, 'message', 'Only directors, secretaries and section leaders can generate codes.');
   end if;
   if not exists (select 1 from public.events where id = p_event_id) then
@@ -636,7 +687,7 @@ begin
   end if;
 
   -- Directors run the band; they don't check in.
-  if (select public.user_role()) = 'director' then
+  if public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Directors don''t check in.');
   end if;
 
@@ -724,7 +775,7 @@ begin
   end if;
 
   -- Directors run the band; they don't check in.
-  if (select public.user_role()) = 'director' then
+  if public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Directors don''t check in.');
   end if;
 
@@ -805,16 +856,15 @@ set search_path = public
 as $$
 declare
   v_uid  uuid := auth.uid();
-  v_role public.app_role := public.user_role();
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if v_role::text not in ('director', 'section_leader', 'secretary') then
+  if not (public.user_has_role('director') or public.user_has_role('section_leader') or public.user_has_role('secretary')) then
     return jsonb_build_object('ok', false, 'message', 'Only staff may override attendance.');
   end if;
 
-  if v_role = 'section_leader' then
+  if public.user_has_role('section_leader') then
     if not exists (
       select 1 from public.profiles s
       where s.id = p_student_id
@@ -826,7 +876,7 @@ begin
   end if;
 
   -- Directors don't have attendance records.
-  if (select role from public.profiles where id = p_student_id) = 'director' then
+  if (select roles from public.profiles where id = p_student_id) @> '{director}'::public.app_role[] then
     return jsonb_build_object('ok', false, 'message', 'Directors don''t have attendance records.');
   end if;
 
@@ -873,7 +923,6 @@ set search_path = public, extensions
 as $$
 declare
   v_uid      uuid := auth.uid();
-  v_role     public.app_role := public.user_role();
   v_user_id  uuid;
   v_email    text := lower(trim(p_email));
   v_pw       text := null;
@@ -882,10 +931,10 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if v_role not in ('director', 'section_leader') then
+  if not (public.user_has_role('director') or public.user_has_role('section_leader')) then
     return jsonb_build_object('ok', false, 'message', 'Only directors and section leaders can add members.');
   end if;
-  if v_role = 'section_leader' then
+  if public.user_has_role('section_leader') and not public.user_has_role('director') then
     -- Section leaders may only add members to their own section, always as
     -- students — they can never create staff or move members between sections.
     p_instrument := (select instrument from public.profiles where id = v_uid);
@@ -955,15 +1004,15 @@ begin
 
   -- Add the member to the roster. For a brand-new user the signup trigger
   -- already created a profile; for an existing user this is what actually
-  -- adds them to the roster. Role is intentionally left untouched on conflict
-  -- so adding someone never silently demotes a section leader.
-  insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
+  -- adds them to the roster. Roles are intentionally left untouched on
+  -- conflict so adding someone never silently demotes a section leader.
+  insert into public.profiles (id, full_name, display_name, instrument, roles, must_change_password)
   values (
     v_user_id,
     p_full_name,
     p_full_name,
     p_instrument,
-    'student',
+    '{student}'::public.app_role[],
     v_pw is not null  -- force a change only when we issued a temp password
   )
   on conflict (id) do update
@@ -1104,7 +1153,7 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if (select public.user_role()) <> 'director' then
+  if not public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Only directors can reset passwords.');
   end if;
   if not exists (select 1 from public.profiles where id = p_member_id) then
@@ -1153,13 +1202,13 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if (select public.user_role()) <> 'director' then
+  if not public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Only directors can deactivate members.');
   end if;
   if not exists (select 1 from public.profiles where id = p_member_id) then
     return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
   end if;
-  if (select role from public.profiles where id = p_member_id) = 'director' then
+  if (select roles from public.profiles where id = p_member_id) @> '{director}'::public.app_role[] then
     return jsonb_build_object('ok', false, 'message', 'Directors cannot deactivate another director.');
   end if;
 
@@ -1182,13 +1231,13 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if (select public.user_role()) <> 'director' then
+  if not public.user_has_role('director') then
     return jsonb_build_object('ok', false, 'message', 'Only directors can reactivate members.');
   end if;
   if not exists (select 1 from public.profiles where id = p_member_id) then
     return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
   end if;
-  if (select role from public.profiles where id = p_member_id) = 'director' then
+  if (select roles from public.profiles where id = p_member_id) @> '{director}'::public.app_role[] then
     return jsonb_build_object('ok', false, 'message', 'Directors cannot reactivate another director.');
   end if;
 
@@ -1214,25 +1263,26 @@ set search_path = public
 as $$
 declare
   v_uid  uuid := auth.uid();
-  v_role public.app_role := public.user_role();
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if v_role = 'director' then
+  if public.user_has_role('director') then
     if not exists (select 1 from public.profiles where id = p_member_id) then
       return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
     end if;
-    if (select role from public.profiles where id = p_member_id) = 'director' then
+    if (select roles from public.profiles where id = p_member_id) @> '{director}'::public.app_role[] then
       return jsonb_build_object('ok', false, 'message', 'Directors cannot change another director''s instrument.');
     end if;
-  elsif v_role = 'section_leader' then
+  elsif public.user_has_role('section_leader') then
     -- Section leaders: the member must already be in their own section
     -- (same instrument), and must not be themselves or another staff member.
     if not exists (
       select 1 from public.profiles s
       where s.id = p_member_id
-        and s.role = 'student'
+        and s.roles @> '{student}'::public.app_role[]
+        and not (s.roles @> '{director}'::public.app_role[])
+        and not (s.roles @> '{section_leader}'::public.app_role[])
         and s.instrument <> ''
         and s.instrument = (select instrument from public.profiles where id = v_uid)
     ) then
@@ -1260,7 +1310,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select case when (select public.user_role()) = 'director'
+  select case when public.user_has_role('director')
     then jsonb_build_object(
       'ok', true,
       'code', coalesce((select value from public.app_settings where key = 'band_join_code'), '')
@@ -1270,6 +1320,8 @@ as $$
 $$;
 
 grant execute on function public.user_role() to authenticated;
+grant execute on function public.user_roles() to authenticated;
+grant execute on function public.user_has_role(public.app_role) to authenticated;
 grant execute on function public.start_checkin_session(uuid) to authenticated;
 grant execute on function public.record_attendance(text) to authenticated;
 grant execute on function public.record_attendance_by_code(text) to authenticated;
