@@ -1,5 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { useOutletContext, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useNavigate,
+  useOutletContext,
+  useSearchParams,
+} from "react-router-dom";
 import type { Html5Qrcode } from "html5-qrcode";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -37,6 +41,16 @@ interface ActiveSession {
 
 export default function CheckInScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
+  const navigate = useNavigate();
+  const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear any pending post-check-in navigation if this screen unmounts.
+  useEffect(() => {
+    return () => {
+      if (navTimer.current) clearTimeout(navTimer.current);
+    };
+  }, []);
+
   const isStaff =
     profile.roles.includes("director") ||
     profile.roles.includes("secretary") ||
@@ -257,6 +271,9 @@ export default function CheckInScreen() {
     const ev = upcomingEvents.find((e) => e.id === result.event_id);
     if (ev) setSelectedEvent(ev);
     void refreshMyRecord(result.event_id);
+    // Once checked in, take them straight to the attendance screen.
+    if (navTimer.current) clearTimeout(navTimer.current);
+    navTimer.current = setTimeout(() => navigate("/attendance"), 1200);
   }
 
   /* ---------------------- manual code entry ------------------------------ */
