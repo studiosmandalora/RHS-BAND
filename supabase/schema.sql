@@ -6,7 +6,8 @@
 --
 -- Security model:
 --   * Every table has Row Level Security enabled; roles are read from the
---     `profiles.role` column ('director' | 'section_leader' | 'student').
+--     `profiles.role` column ('director' | 'section_leader' | 'secretary' |
+--     'student').
 --   * Attendance rows can NEVER be inserted/updated/deleted directly from the
 --     client — there are no INSERT/UPDATE/DELETE policies on
 --     attendance_records. Every write goes through a security-definer RPC
@@ -22,9 +23,16 @@
 do $$
 begin
   if not exists (select 1 from pg_type where typname = 'app_role') then
-    create type public.app_role as enum ('student', 'section_leader', 'director');
+    create type public.app_role as enum ('student', 'section_leader', 'secretary', 'director');
   end if;
 end $$;
+
+-- Add the secretary role on databases created before it existed (idempotent).
+-- Note: a newly-added enum value can't be USED in the same transaction, and the
+-- SQL editor runs this whole script as one transaction. So everywhere below
+-- that compares against 'secretary' casts the role to text first (::text),
+-- which avoids comparing the enum value directly.
+alter type public.app_role add value if not exists 'secretary';
 
 create table if not exists public.profiles (
   id                   uuid primary key references auth.users (id) on delete cascade,
@@ -208,29 +216,32 @@ create index if not exists checkin_attempts_actor_event_idx
 alter table public.checkin_attempts enable row level security;
 
 -- ---------------------------------------------------------------------------
--- 5. Chat — one channel per instrument section + a General channel
+-- 4c. Personal events — each member's own private calendar entries
 -- ---------------------------------------------------------------------------
-create table if not exists public.chat_channels (
+create table if not exists public.personal_events (
   id         uuid primary key default gen_random_uuid(),
+  owner_id   uuid not null references public.profiles (id) on delete cascade,
   name       text not null,
-  slug       text not null unique,
-  section    text not null default '',          -- matches profiles.instrument
-  is_general boolean not null default false,
+  date       timestamptz not null,
+  location   text not null default '',
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.chat_messages (
-  id         uuid primary key default gen_random_uuid(),
-  channel_id uuid not null references public.chat_channels (id) on delete cascade,
-  sender_id  uuid not null references public.profiles (id) on delete cascade,
-  text       text not null check (char_length(text) between 1 and 2000),
-  created_at timestamptz not null default now()
-);
+create index if not exists personal_events_owner_idx
+  on public.personal_events (owner_id, date);
 
-create index if not exists chat_messages_channel_idx on public.chat_messages (channel_id, created_at desc);
+alter table public.personal_events enable row level security;
+
+-- Members may read/write only their own personal events.
+drop policy if exists "personal_events_own_all" on public.personal_events;
+create policy "personal_events_own_all"
+  on public.personal_events for all
+  to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
 
 -- ---------------------------------------------------------------------------
--- 6. Shared helpers (used by RLS policies and RPCs)
+-- 5. Shared helpers (used by RLS policies and RPCs)
 -- ---------------------------------------------------------------------------
 -- The current signed-in user's role. security definer so policies can call it
 -- without recursively tripping over the profiles RLS policies.
@@ -274,31 +285,6 @@ $$;
 
 grant execute on function public.client_ip() to anon, authenticated;
 
--- Whether the current user may see/post in the given channel:
---   directors → every channel (including General)
---   students & section leaders → only their own instrument's channel
-create or replace function public.can_use_channel(p_channel_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1
-    from public.chat_channels c
-    where c.id = p_channel_id
-      and (
-        (select public.user_role()) = 'director'
-        or (
-          c.is_general is not true
-          and c.section <> ''
-          and c.section = (select instrument from public.profiles where id = auth.uid())
-        )
-      )
-  );
-$$;
-
 -- Don't let anyone change their own (or anyone's) role unless they are a director.
 create or replace function public.guard_role_change()
 returns trigger
@@ -311,8 +297,8 @@ begin
     if (select public.user_role()) <> 'director' then
       raise exception 'Only directors can change roles';
     end if;
-    -- Directors may change students and section leaders, but never another
-    -- director's role.
+    -- Directors may change students, section leaders and secretaries, but
+    -- never another director's role.
     if old.role = 'director' then
       raise exception 'Directors cannot change another director''s role';
     end if;
@@ -327,19 +313,17 @@ create trigger profiles_guard_role_change
   for each row execute function public.guard_role_change();
 
 -- ---------------------------------------------------------------------------
--- 7. Row Level Security policies
+-- 6. Row Level Security policies
 -- ---------------------------------------------------------------------------
 alter table public.profiles enable row level security;
 alter table public.events enable row level security;
 alter table public.checkin_sessions enable row level security;
 alter table public.attendance_records enable row level security;
-alter table public.chat_channels enable row level security;
-alter table public.chat_messages enable row level security;
 
 -- profiles ------------------------------------------------------------------
--- Everyone signed in may read the roster (needed for chat sender names,
--- calendar et cetera), and may update their own row; directors can update any
--- row. Rows are only ever created by the signup trigger; any member may be
+-- Everyone signed in may read the roster (needed for member names, avatars,
+-- attendance, et cetera), and may update their own row; directors can update
+-- any row. Rows are only ever created by the signup trigger; any member may be
 -- deleted by a director (removal from the roster).
 drop policy if exists "profiles_read_all_authed" on public.profiles;
 create policy "profiles_read_all_authed"
@@ -359,10 +343,19 @@ create policy "profiles_delete_director"
   on public.profiles for delete
   to authenticated
   using (
-    (select public.user_role()) = 'director'
-    -- directors manage students & section leaders, never other directors
-    -- (or themselves)
-    and role <> 'director'
+    -- Directors manage students, section leaders & secretaries — never another
+    -- director (or themselves).
+    ((select public.user_role()) = 'director' and role <> 'director')
+    or
+    -- Section leaders may remove students from their own section (never
+    -- themselves, staff, or members of other sections).
+    (
+      (select public.user_role()) = 'section_leader'
+      and id <> auth.uid()
+      and role = 'student'
+      and (select instrument from public.profiles where id = auth.uid()) <> ''
+      and instrument = (select instrument from public.profiles where id = auth.uid())
+    )
   );
 
 -- events -------------------------------------------------------------------
@@ -377,7 +370,7 @@ create policy "events_insert_staff"
   on public.events for insert
   to authenticated
   with check (
-    (select public.user_role()) in ('director', 'section_leader')
+    (select public.user_role())::text in ('director', 'secretary')
     and created_by = auth.uid()
   );
 
@@ -430,39 +423,8 @@ create policy "attendance_read_self_staff"
     )
   );
 
--- chat_channels ----------------------------------------------------------------
-drop policy if exists "chat_channels_visible_to_members" on public.chat_channels;
-create policy "chat_channels_visible_to_members"
-  on public.chat_channels for select
-  to authenticated
-  using (public.can_use_channel(id)); -- director → everything; others → own section
-
-drop policy if exists "chat_channels_insert_director" on public.chat_channels;
-create policy "chat_channels_insert_director"
-  on public.chat_channels for insert
-  to authenticated
-  with check ((select public.user_role()) = 'director');
-
--- chat_messages -------------------------------------------------------------------
--- Read/posting is scoped by the same rule as channels. General is effectively
--- director-only messaging; members can read/post only in their own section.
-drop policy if exists "chat_messages_read_scoped" on public.chat_messages;
-create policy "chat_messages_read_scoped"
-  on public.chat_messages for select
-  to authenticated
-  using (public.can_use_channel(channel_id));
-
-drop policy if exists "chat_messages_insert_scoped" on public.chat_messages;
-create policy "chat_messages_insert_scoped"
-  on public.chat_messages for insert
-  to authenticated
-  with check (
-    sender_id = auth.uid()
-    and public.can_use_channel(channel_id)
-  );
-
 -- ---------------------------------------------------------------------------
--- 8. App settings — band join code
+-- 7. App settings — band join code
 -- ---------------------------------------------------------------------------
 -- The join code is a shared secret the director sets/rotates from the Roster
 -- screen. RLS is enabled with NO client policies: the only code paths that can
@@ -577,7 +539,7 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 9. Security-definer RPCs (the ONLY path to write attendance/codes)
+-- 8. Security-definer RPCs (the ONLY path to write attendance/codes)
 -- ---------------------------------------------------------------------------
 
 -- Staff start a 60-second live code for an event. Issuing a new code for the
@@ -598,8 +560,8 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Sign in to generate a code.');
   end if;
-  if v_role not in ('director', 'section_leader') then
-    return jsonb_build_object('ok', false, 'message', 'Only directors and section leaders can generate codes.');
+  if v_role::text not in ('director', 'section_leader', 'secretary') then
+    return jsonb_build_object('ok', false, 'message', 'Only directors, secretaries and section leaders can generate codes.');
   end if;
   if not exists (select 1 from public.events where id = p_event_id) then
     return jsonb_build_object('ok', false, 'message', 'That event no longer exists.');
@@ -814,7 +776,7 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if v_role not in ('director', 'section_leader') then
+  if v_role::text not in ('director', 'section_leader', 'secretary') then
     return jsonb_build_object('ok', false, 'message', 'Only staff may override attendance.');
   end if;
 
@@ -850,13 +812,16 @@ exception
 end;
 $$;
 
--- Director adds a member to the roster: creates the auth.user (confirmed email,
--- a unique random temporary password) and the identities link; the signup
+-- Adds a member to the roster: creates the auth.user (confirmed email, a
+-- unique random temporary password) and the identities link; the signup
 -- trigger then creates the profiles row with role 'student'. The new member is
 -- flagged must_change_password = true so they're forced to set their own
 -- password on first sign-in. The temporary password is returned to the caller
--- (the director) so they can hand it to the student directly — it is never
--- stored anywhere else or logged.
+-- so they can hand it to the student directly — it is never stored anywhere
+-- else or logged.
+--
+-- Directors may add anyone to any section. Section leaders may only add
+-- members to their OWN section (always as students).
 create or replace function public.invite_member(
   p_email      text,
   p_full_name  text,
@@ -878,8 +843,16 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if v_role <> 'director' then
-    return jsonb_build_object('ok', false, 'message', 'Only directors can add members.');
+  if v_role not in ('director', 'section_leader') then
+    return jsonb_build_object('ok', false, 'message', 'Only directors and section leaders can add members.');
+  end if;
+  if v_role = 'section_leader' then
+    -- Section leaders may only add members to their own section, always as
+    -- students — they can never create staff or move members between sections.
+    p_instrument := (select instrument from public.profiles where id = v_uid);
+    if coalesce(p_instrument, '') = '' then
+      return jsonb_build_object('ok', false, 'message', 'Your section isn''t set — ask the director to assign your instrument first.');
+    end if;
   end if;
   if v_email = '' or position('@' in v_email) = 0 then
     return jsonb_build_object('ok', false, 'message', 'Enter a valid email address.');
@@ -985,7 +958,7 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 9b. In-app notifications (bell) + realtime
+-- 8b. In-app notifications (bell) + realtime
 -- ---------------------------------------------------------------------------
 -- One row per notification per recipient. Rows are created ONLY by the
 -- security-definer triggers below (which run as the table owner and therefore
@@ -994,7 +967,7 @@ $$;
 create table if not exists public.notifications (
   id         uuid primary key default gen_random_uuid(),
   user_id    uuid not null references public.profiles (id) on delete cascade,
-  type       text not null check (type in ('new_event', 'checkin_open', 'chat_message')),
+  type       text not null check (type in ('new_event', 'checkin_open')),
   title      text not null,
   body       text not null default '',
   payload    jsonb not null default '{}'::jsonb,
@@ -1067,53 +1040,8 @@ create trigger on_checkin_session_inserted
   after insert on public.checkin_sessions
   for each row execute function public.notify_checkin_open();
 
--- New chat message → notify the channel's section members (or directors for
--- the General channel), excluding the sender. The client marks these read when
--- the user is already on the Chat screen.
-create or replace function public.notify_chat_message()
-returns trigger
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  v_section    text;
-  v_is_general boolean;
-  v_sender     text;
-begin
-  select section, is_general into v_section, v_is_general
-    from public.chat_channels where id = new.channel_id;
-
-  select display_name into v_sender from public.profiles where id = new.sender_id;
-
-  if v_is_general then
-    insert into public.notifications (user_id, type, title, body, payload)
-    select p.id, 'chat_message',
-           coalesce(v_sender, 'Band member') || ' posted in General',
-           new.text,
-           jsonb_build_object('channel_id', new.channel_id, 'sender_name', v_sender)
-      from public.profiles p
-     where p.role = 'director' and p.id <> new.sender_id;
-  else
-    insert into public.notifications (user_id, type, title, body, payload)
-    select p.id, 'chat_message',
-           coalesce(v_sender, 'Band member') || ' posted in ' || coalesce(v_section, 'your section'),
-           new.text,
-           jsonb_build_object('channel_id', new.channel_id, 'sender_name', v_sender)
-      from public.profiles p
-     where p.instrument = v_section and p.id <> new.sender_id;
-  end if;
-  return new;
-end;
-$$;
-
-drop trigger if exists on_chat_message_inserted on public.chat_messages;
-create trigger on_chat_message_inserted
-  after insert on public.chat_messages
-  for each row execute function public.notify_chat_message();
-
 -- ---------------------------------------------------------------------------
--- 9c. Admin tools (director-only, security definer)
+-- 8c. Admin tools (director-only, security definer)
 -- ---------------------------------------------------------------------------
 
 -- Director resets a member's password (e.g. a student who can't use the email
@@ -1248,7 +1176,6 @@ as $$
 $$;
 
 grant execute on function public.user_role() to authenticated;
-grant execute on function public.can_use_channel(uuid) to authenticated;
 grant execute on function public.start_checkin_session(uuid) to authenticated;
 grant execute on function public.record_attendance(text) to authenticated;
 grant execute on function public.record_attendance_by_code(text) to authenticated;
@@ -1263,7 +1190,7 @@ grant execute on function public.reactivate_member(uuid) to authenticated;
 grant execute on function public.validate_band_join_code(text) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
--- 10. Storage — avatar photos
+-- 9. Storage — avatar photos
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -1308,18 +1235,11 @@ create policy "avatars_delete_own"
   );
 
 -- ---------------------------------------------------------------------------
--- 11. Realtime
+-- 10. Realtime
 -- ---------------------------------------------------------------------------
--- Chat messages stream to subscribed clients and a staff member watching the
--- Check-In screen sees check-ins arrive live.
+-- A staff member watching the Check-In screen sees check-ins arrive live.
 -- Best-effort: if the project's publication differs (e.g. some newer projects),
 -- enable Realtime per table from Dashboard → Table editor → Realtime instead.
-do $$
-begin
-  alter publication supabase_realtime add table public.chat_messages;
-exception when others then null;
-end $$;
-
 do $$
 begin
   alter publication supabase_realtime add table public.attendance_records;

@@ -3,7 +3,6 @@ import AppShell from "./components/AppShell";
 import { isSupabaseConfigured } from "./lib/supabase";
 import AttendanceScreen from "./screens/AttendanceScreen";
 import CalendarScreen from "./screens/CalendarScreen";
-import ChatScreen from "./screens/ChatScreen";
 import CheckInScreen from "./screens/CheckInScreen";
 import NeedsSetup from "./screens/NeedsSetup";
 import ProfileScreen from "./screens/ProfileScreen";
@@ -23,7 +22,6 @@ export default function App() {
         <Route index element={<CalendarScreen />} />
         <Route path="checkin" element={<CheckInScreen />} />
         <Route path="attendance" element={<AttendanceScreen />} />
-        <Route path="chat" element={<ChatScreen />} />
         <Route path="roster" element={<RosterScreen />} />
         <Route path="profile" element={<ProfileScreen />} />
       </Route>

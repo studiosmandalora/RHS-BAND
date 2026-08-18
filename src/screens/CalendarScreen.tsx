@@ -9,9 +9,15 @@ import {
   MapPin,
   Music,
   Plus,
+  Trash2,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
-import type { EventRow, EventType, Profile } from "../lib/types";
+import type {
+  EventRow,
+  EventType,
+  PersonalEventRow,
+  Profile,
+} from "../lib/types";
 import {
   addMonths,
   fmtDateTime,
@@ -35,6 +41,53 @@ import {
 } from "../components/ui";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
+
+function PersonalEventCard({
+  event,
+  onDelete,
+  deleting,
+}: {
+  event: PersonalEventRow;
+  onDelete: (event: PersonalEventRow) => void;
+  deleting?: boolean;
+}) {
+  return (
+    <Card className="p-4 ring-1 ring-sky-200 dark:ring-sky-900">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl bg-sky-100 text-sky-600 dark:bg-sky-950/60 dark:text-sky-300">
+          <CalendarDays className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-bold text-ink dark:text-zinc-100">
+              {event.name}
+            </p>
+            <Badge className="bg-sky-100 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">
+              Personal
+            </Badge>
+          </div>
+          <p className="mt-1 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <Clock className="size-3.5" /> {fmtDateTime(event.date)}
+          </p>
+          {event.location && (
+            <p className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <MapPin className="size-3.5" /> {event.location}
+            </p>
+          )}
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="mt-3 w-full text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+        loading={deleting}
+        onClick={() => onDelete(event)}
+      >
+        <Trash2 className="size-4" /> Remove
+      </Button>
+    </Card>
+  );
+}
 
 function EventCard({
   event,
@@ -92,7 +145,9 @@ function EventCard({
 
 export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
-  const canAdd = profile.role === "director" || profile.role === "section_leader";
+  // Only directors and secretaries add band events; everyone adds personal ones.
+  const canAdd =
+    profile.role === "director" || profile.role === "secretary";
   const isDirector = profile.role === "director";
 
   const now = new Date();
@@ -101,16 +156,28 @@ export default function CalendarScreen() {
   );
   const [selected, setSelected] = useState<Date>(startOfDay(now));
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [personalEvents, setPersonalEvents] = useState<PersonalEventRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
 
-  // add-event form
+  // add-event form (band events)
   const [name, setName] = useState("");
   const [type, setType] = useState<EventType>("rehearsal");
   const [date, setDate] = useState("");
   const [location, setLocation] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // personal-event form
+  const [showAddPersonal, setShowAddPersonal] = useState(false);
+  const [pName, setPName] = useState("");
+  const [pDate, setPDate] = useState("");
+  const [pLocation, setPLocation] = useState("");
+  const [pSaving, setPSaving] = useState(false);
+  const [pFormError, setPFormError] = useState<string | null>(null);
+  const [deletingPersonalId, setDeletingPersonalId] = useState<string | null>(
+    null
+  );
 
   // director: email reminders for absent members
   const [remindingId, setRemindingId] = useState<string | null>(null);
@@ -121,17 +188,23 @@ export default function CalendarScreen() {
 
   async function loadEvents() {
     setLoading(true);
-    const { data } = await supabase
-      .from("events")
-      .select("*")
-      .order("date", { ascending: true });
-    setEvents((data as EventRow[]) ?? []);
+    const [band, personal] = await Promise.all([
+      supabase.from("events").select("*").order("date", { ascending: true }),
+      supabase
+        .from("personal_events")
+        .select("*")
+        .eq("owner_id", profile.id)
+        .order("date", { ascending: true }),
+    ]);
+    setEvents((band.data as EventRow[]) ?? []);
+    setPersonalEvents((personal.data as PersonalEventRow[]) ?? []);
     setLoading(false);
   }
 
   useEffect(() => {
     void loadEvents();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.id]);
 
   const matrix = useMemo(
     () => monthMatrix(cursor.getFullYear(), cursor.getMonth()),
@@ -149,12 +222,31 @@ export default function CalendarScreen() {
     return map;
   }, [events]);
 
+  const personalByDay = useMemo(() => {
+    const map = new Map<string, PersonalEventRow[]>();
+    for (const ev of personalEvents) {
+      const key = startOfDay(new Date(ev.date)).toDateString();
+      const arr = map.get(key) ?? [];
+      arr.push(ev);
+      map.set(key, arr);
+    }
+    return map;
+  }, [personalEvents]);
+
   const dayEvents = useMemo(
     () =>
       (byDay.get(selected.toDateString()) ?? []).sort(
         (a, b) => +new Date(a.date) - +new Date(b.date)
       ),
     [byDay, selected]
+  );
+
+  const dayPersonal = useMemo(
+    () =>
+      (personalByDay.get(selected.toDateString()) ?? []).sort(
+        (a, b) => +new Date(a.date) - +new Date(b.date)
+      ),
+    [personalByDay, selected]
   );
 
   async function submitEvent(e: React.FormEvent) {
@@ -225,6 +317,59 @@ export default function CalendarScreen() {
     setShowAdd(true);
   }
 
+  function openAddPersonal() {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setPDate(
+      `${selected.getFullYear()}-${pad(selected.getMonth() + 1)}-${pad(
+        selected.getDate()
+      )}T18:00`
+    );
+    setPFormError(null);
+    setShowAddPersonal(true);
+  }
+
+  async function submitPersonal(e: React.FormEvent) {
+    e.preventDefault();
+    setPFormError(null);
+    if (!pName.trim() || !pDate) {
+      setPFormError("Give your event a name and a date.");
+      return;
+    }
+    setPSaving(true);
+    const { error } = await supabase.from("personal_events").insert({
+      owner_id: profile.id,
+      name: pName.trim(),
+      date: new Date(pDate).toISOString(),
+      location: pLocation.trim(),
+    });
+    setPSaving(false);
+    if (error) {
+      setPFormError(error.message);
+      return;
+    }
+    setShowAddPersonal(false);
+    setPName("");
+    setPDate("");
+    setPLocation("");
+    void loadEvents();
+  }
+
+  async function deletePersonal(ev: PersonalEventRow) {
+    if (
+      !window.confirm(
+        `Remove “${ev.name}” from your calendar? This only deletes your personal event.`
+      )
+    )
+      return;
+    setDeletingPersonalId(ev.id);
+    const { error } = await supabase
+      .from("personal_events")
+      .delete()
+      .eq("id", ev.id);
+    setDeletingPersonalId(null);
+    if (!error) void loadEvents();
+  }
+
   return (
     <div className="px-4 pb-6 pt-5">
       {/* header */}
@@ -280,7 +425,9 @@ export default function CalendarScreen() {
           ))}
           {matrix.flat().map((day, i) => {
             if (!day) return <div key={i} />;
-            const has = (byDay.get(day.toDateString())?.length ?? 0) > 0;
+            const has =
+              (byDay.get(day.toDateString())?.length ?? 0) > 0 ||
+              (personalByDay.get(day.toDateString())?.length ?? 0) > 0;
             const isSelected = isSameDay(day, selected);
             const isToday = isSameDay(day, now);
             return (
@@ -319,19 +466,31 @@ export default function CalendarScreen() {
 
       {/* selected day events */}
       <div className="mt-5">
-        <p className="mb-2 text-xs font-bold uppercase tracking-wide text-zinc-400">
-          {relativeDay(selected.toISOString())}
-        </p>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-bold uppercase tracking-wide text-zinc-400">
+            {relativeDay(selected.toISOString())}
+          </p>
+          <button
+            onClick={openAddPersonal}
+            className="text-xs font-semibold text-sky-600 hover:text-sky-700 dark:text-sky-400 dark:hover:text-sky-300"
+          >
+            + Add personal event
+          </button>
+        </div>
         {loading ? (
           <div className="space-y-2">
             <div className="h-20 animate-pulse rounded-2xl bg-zinc-100 dark:bg-zinc-800" />
             <div className="h-20 animate-pulse rounded-2xl bg-zinc-100 dark:bg-zinc-800" />
           </div>
-        ) : dayEvents.length === 0 ? (
+        ) : dayEvents.length === 0 && dayPersonal.length === 0 ? (
           <EmptyState
             icon={<CalendarDays className="size-6" />}
             title="No events this day"
-            subtitle={canAdd ? "Tap “Add event” to schedule something." : undefined}
+            subtitle={
+              canAdd
+                ? "Tap “Add event” to schedule a band event, or add a personal one."
+                : "Add a personal event to keep this day on your calendar."
+            }
           />
         ) : (
           <>
@@ -341,6 +500,14 @@ export default function CalendarScreen() {
               </Alert>
             )}
             <div className="space-y-2">
+              {dayPersonal.map((ev) => (
+                <PersonalEventCard
+                  key={ev.id}
+                  event={ev}
+                  onDelete={deletePersonal}
+                  deleting={deletingPersonalId === ev.id}
+                />
+              ))}
               {dayEvents.map((ev) => (
                 <EventCard
                   key={ev.id}
@@ -404,6 +571,46 @@ export default function CalendarScreen() {
           {formError && <Alert tone="error">{formError}</Alert>}
           <Button type="submit" size="lg" loading={saving} className="w-full">
             Save event
+          </Button>
+        </form>
+      </Modal>
+
+      {/* add personal event modal */}
+      <Modal
+        open={showAddPersonal}
+        onClose={() => setShowAddPersonal(false)}
+        title="Add personal event"
+      >
+        <form onSubmit={submitPersonal} className="space-y-4">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Personal events are private — only you can see them on the
+            calendar.
+          </p>
+          <Field label="Event name">
+            <Input
+              value={pName}
+              onChange={(e) => setPName(e.target.value)}
+              placeholder="e.g. Section practice, study session"
+              autoFocus
+            />
+          </Field>
+          <Field label="Date & time">
+            <Input
+              type="datetime-local"
+              value={pDate}
+              onChange={(e) => setPDate(e.target.value)}
+            />
+          </Field>
+          <Field label="Location (optional)">
+            <Input
+              value={pLocation}
+              onChange={(e) => setPLocation(e.target.value)}
+              placeholder="e.g. Band Room"
+            />
+          </Field>
+          {pFormError && <Alert tone="error">{pFormError}</Alert>}
+          <Button type="submit" size="lg" loading={pSaving} className="w-full">
+            Save personal event
           </Button>
         </form>
       </Modal>

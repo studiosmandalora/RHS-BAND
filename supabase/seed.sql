@@ -2,8 +2,8 @@
 -- RHS Band Attendance Manager — Seed data (run AFTER supabase/schema.sql)
 -- ----------------------------------------------------------------------------
 -- Creates demo auth users (email/password, bcrypt hashed), their profiles,
--- a few past + upcoming events, attendance history, chat channels and some
--- starter messages, so the app is demoable immediately.
+-- a few past + upcoming events and attendance history, so the app is
+-- demoable immediately.
 --
 -- All demo accounts use the password:  band1234
 --   director@rhsband.org     → Marissa Bennett (director)
@@ -13,6 +13,27 @@
 -- Dates are generated relative to CURRENT_DATE so the demo always has a
 -- believable mix of past and upcoming events.
 -- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- 0. Prerequisite check — the schema must have been applied (and committed)
+-- ---------------------------------------------------------------------------
+-- The seed inserts a 'secretary' demo profile, so the app_role enum must
+-- already contain that value. schema.sql adds it, but only becomes visible
+-- after that script's transaction commits. Fail with a clear message instead
+-- of a cryptic enum error if the schema hasn't been re-run.
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_enum e
+    join pg_type t on t.oid = e.enumtypid
+    where t.typname = 'app_role'
+      and e.enumlabel = 'secretary'
+  ) then
+    raise exception
+      'Run supabase/schema.sql first (and let it finish) — the app_role enum is missing the “secretary” value.';
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- 1. Auth users (needs pgcrypto — pre-installed on Supabase)
@@ -220,31 +241,54 @@ begin
       'email', v_id::text, now(), now(), now()
     );
   end if;
+
+  -- ---------- Sam Rivera — secretary ----------
+  v_id := '4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d';
+  if not exists (select 1 from auth.users where id = v_id) then
+    insert into auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) values (
+      v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+      'secretary@rhsband.org', crypt('band1234', gen_salt('bf', 10)), now(),
+      '{}'::jsonb,
+      '{"full_name":"Sam Rivera","display_name":"Sam","instrument":""}',
+      now(), now()
+    );
+    insert into auth.identities (
+      id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
+    ) values (
+      v_id, v_id,
+      jsonb_build_object('sub', v_id::text, 'email', 'secretary@rhsband.org'),
+      'email', v_id::text, now(), now(), now()
+    );
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 2. Roles & display names (the signup trigger already created the rows)
+-- 2. Roles & display names — UPSERTED so demo profiles always exist, even when
+--    the auth users already existed (so the signup trigger never fired, e.g.
+--    after reset.sql) or a band join code is set. Runs as the SQL-editor admin
+--    (no auth.uid()), so the role-change guard doesn't apply.
 -- ---------------------------------------------------------------------------
-update public.profiles
-   set role = 'director',
-       full_name = 'Marissa Bennett',
-       display_name = 'Ms. Bennett',
-       instrument = ''
- where id = 'd1111111-1111-4111-8111-111111111111';
-
-update public.profiles
-   set role = 'section_leader',
-       full_name = 'Tyler Nguyen',
-       display_name = 'Tyler'
- where id = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-
-update public.profiles set display_name = 'Ava'  where id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-update public.profiles set display_name = 'Mia'  where id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-update public.profiles set display_name = 'Noah' where id = 'e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2';
-update public.profiles set display_name = 'Ethan' where id = 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0';
-update public.profiles set display_name = 'Lily' where id = '1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a';
-update public.profiles set display_name = 'Diego' where id = '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b';
-update public.profiles set display_name = 'Chloe' where id = '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c';
+insert into public.profiles (id, full_name, display_name, instrument, role, must_change_password)
+values
+  ('d1111111-1111-4111-8111-111111111111', 'Marissa Bennett', 'Ms. Bennett', '',           'director',       false),
+  ('cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'Tyler Nguyen',    'Tyler',       'Trumpet',     'section_leader', false),
+  ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'Ava Rodriguez',   'Ava',         'Flute',       'student',        false),
+  ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'Mia Chen',        'Mia',         'Clarinet',    'student',        false),
+  ('e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', 'Noah Williams',   'Noah',        'Saxophone',   'student',        false),
+  ('f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0', 'Ethan Patel',     'Ethan',       'Percussion',  'student',        false),
+  ('1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', 'Lily Johnson',    'Lily',        'Trombone',    'student',        false),
+  ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    'student',        false),
+  ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Color Guard', 'student',        false),
+  ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            'secretary',      false)
+on conflict (id) do update
+  set full_name = excluded.full_name,
+      display_name = excluded.display_name,
+      instrument = excluded.instrument,
+      role = excluded.role,
+      must_change_password = false;
 
 -- ---------------------------------------------------------------------------
 -- 2b. GoTrue token columns
@@ -263,6 +307,7 @@ update auth.users
        reauthentication_token = ''
  where email in (
    'director@rhsband.org',
+   'secretary@rhsband.org',
    'tyler.nguyen@rhsband.org',
    'ava.rodriguez@rhsband.org',
    'mia.chen@rhsband.org',
@@ -290,7 +335,8 @@ insert into public.events (id, name, type, date, location, created_by) values
   ('e0000006-0000-4000-8000-000000000006', 'Away @ Central High', 'game',
    (current_date + 13)::timestamptz + interval '18 hours 30 minutes', 'Central High Stadium', 'd1111111-1111-4111-8111-111111111111'),
   ('e0000007-0000-4000-8000-000000000007', 'Fall Concert — Bring a Friend', 'concert',
-   (current_date + 19)::timestamptz + interval '18 hours', 'PAC Auditorium', 'd1111111-1111-4111-8111-111111111111');
+   (current_date + 19)::timestamptz + interval '18 hours', 'PAC Auditorium', 'd1111111-1111-4111-8111-111111111111')
+on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
 -- 4. Past attendance (present/absent across the 3 past events)
@@ -319,40 +365,11 @@ insert into public.attendance_records (event_id, student_id, attended, checked_i
   ('e0000003-0000-4000-8000-000000000003', '1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', true,  now() - interval '3 days' + interval '2 hours'),
   ('e0000003-0000-4000-8000-000000000003', '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', false, null),
   ('e0000003-0000-4000-8000-000000000003', '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', true,  now() - interval '3 days' + interval '25 minutes'),
-  ('e0000003-0000-4000-8000-000000000003', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', true,  now() - interval '3 days' + interval '40 minutes');
+  ('e0000003-0000-4000-8000-000000000003', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', true,  now() - interval '3 days' + interval '40 minutes')
+on conflict (event_id, student_id) do nothing;
 
 -- ---------------------------------------------------------------------------
--- 5. Chat channels (one per instrument section + General) and starter messages
--- ---------------------------------------------------------------------------
-insert into public.chat_channels (id, name, slug, section, is_general) values
-  ('c0000001-0000-4000-8000-000000000001', 'General',        'general',   '',            true),
-  ('c0000002-0000-4000-8000-000000000002', 'Flutes',         'flute',     'Flute',       false),
-  ('c0000003-0000-4000-8000-000000000003', 'Clarinets',      'clarinet',  'Clarinet',    false),
-  ('c0000004-0000-4000-8000-000000000004', 'Saxophones',     'saxophone', 'Saxophone',   false),
-  ('c0000005-0000-4000-8000-000000000005', 'Trumpets',       'trumpet',   'Trumpet',     false),
-  ('c0000006-0000-4000-8000-000000000006', 'Trombones',      'trombone',  'Trombone',    false),
-  ('c0000007-0000-4000-8000-000000000007', 'Baritones',      'baritone',  'Baritone',    false),
-  ('c0000008-0000-4000-8000-000000000008', 'Percussion',     'percussion','Percussion',  false),
-  ('c0000009-0000-4000-8000-000000000009', 'Color Guard',    'guard',     'Color Guard', false);
-
-insert into public.chat_messages (channel_id, sender_id, text, created_at) values
-  ('c0000001-0000-4000-8000-000000000001', 'd1111111-1111-4111-8111-111111111111',
-   'Welcome to the RHS Band app! Sign in on your phone, then check in at every event so we can track attendance. Go Band! 🎺', now() - interval '2 days'),
-  ('c0000001-0000-4000-8000-000000000001', 'd1111111-1111-4111-8111-111111111111',
-   'Reminder: after-school rehearsal is at 3:30 — be there at 3:15. Hydrate!', now() - interval '4 hours'),
-  ('c0000002-0000-4000-8000-000000000002', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-   'Does anyone have an extra flip folder for music? I lost mine at the parade 😅', now() - interval '3 hours'),
-  ('c0000002-0000-4000-8000-000000000002', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-   '@Ava Ms. Bennett keeps spares in the band cabinet, ask at check-in!', now() - interval '2 hours'),
-  ('c0000005-0000-4000-8000-000000000005', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-   'Trumpets — run the chorale from measure 41 twice before Friday rehearsal. Serious about intonation this week. 🎺', now() - interval '1 day'),
-  ('c0000008-0000-4000-8000-000000000008', 'f0f0f0f0-f0f0-4f0f-8f0f-f0f0f0f0f0f0',
-   'Do NOT drop the bass drum at the home opener. I repeat: do NOT.', now() - interval '6 hours'),
-  ('c0000009-0000-4000-8000-000000000009', '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c',
-   'New flags arrive tomorrow!! Practice tosses at lunch 🪭💛', now() - interval '1 hour');
-
--- ---------------------------------------------------------------------------
--- 6. Optional: a previously used (now expired) check-in code
+-- 5. Optional: a previously used (now expired) check-in code
 -- ---------------------------------------------------------------------------
 insert into public.checkin_sessions (id, event_id, token, created_by, expires_at, created_at) values (
   'c5ec0000-0000-4000-8000-0000000000c5',
@@ -361,10 +378,11 @@ insert into public.checkin_sessions (id, event_id, token, created_by, expires_at
   'd1111111-1111-4111-8111-111111111111',
   now() - interval '1 day',
   now() - interval '1 day' - interval '1 minute'
-);
+)
+on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
--- 7. Important: give the seed a stable, documented base URL for QR codes
+-- 6. Important: give the seed a stable, documented base URL for QR codes
 -- ---------------------------------------------------------------------------
 -- The QR code encodes <origin>/checkin?token=TOKEN, using the URL of the
 -- device that generated it — no configuration needed.

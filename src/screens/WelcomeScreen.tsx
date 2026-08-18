@@ -154,7 +154,7 @@ export default function WelcomeScreen() {
               RHS Band Attendance
             </h1>
             <p className="mt-1 text-sm font-medium text-white/70">
-              Check in, track attendance, and chat by section.
+              Check in, track attendance, and stay in sync with the band.
             </p>
           </div>
         </div>

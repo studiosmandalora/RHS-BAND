@@ -6,6 +6,7 @@ import {
   Power,
   RefreshCw,
   ShieldCheck,
+  Trash2,
   UserCheck,
   UserPlus,
   Users,
@@ -47,6 +48,8 @@ function randomCode(len = 8): string {
 export default function RosterScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isDirector = profile.role === "director";
+  const isSectionLeader = profile.role === "section_leader";
+  const canManage = isDirector || isSectionLeader;
   const [members, setMembers] = useState<Profile[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +97,10 @@ export default function RosterScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.role]);
 
-  async function changeRole(member: Profile, role: "student" | "section_leader") {
+  async function changeRole(
+    member: Profile,
+    role: "student" | "section_leader" | "secretary"
+  ) {
     setError(null);
     const { error } = await supabase
       .from("profiles")
@@ -102,6 +108,29 @@ export default function RosterScreen() {
       .eq("id", member.id);
     if (error) setError(error.message);
     else void load();
+  }
+
+  /* --------------------- remove member from roster ----------------------- */
+  async function removeMember(member: Profile) {
+    if (
+      !window.confirm(
+        `Remove ${member.display_name || member.full_name} from the roster? This deletes their account and attendance history.`
+      )
+    )
+      return;
+    setError(null);
+    setBusyId(member.id);
+    const { error } = await supabase
+      .from("profiles")
+      .delete()
+      .eq("id", member.id);
+    setBusyId(null);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setNotice(`${member.display_name || member.full_name} removed from the roster.`);
+    void load();
   }
 
   async function changeInstrument(member: Profile, instrument: string) {
@@ -167,10 +196,13 @@ export default function RosterScreen() {
     setError(null);
     setNotice(null);
     setAdding(true);
+    // Section leaders can only add members to their own section.
+    const instrument =
+      isSectionLeader && profile.instrument ? profile.instrument : addInstrument;
     const { result, error } = await inviteMember(
       addEmail.trim(),
       addName.trim(),
-      addInstrument
+      instrument
     );
     setAdding(false);
     if (error || !result?.ok) {
@@ -257,11 +289,11 @@ export default function RosterScreen() {
           <h1 className="text-xl font-black text-ink dark:text-zinc-100">Roster</h1>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             {isDirector
-              ? "Manage members and section leaders."
-              : "Your section (read-only)."}
+              ? "Manage the whole band roster."
+              : "Manage your section's roster."}
           </p>
         </div>
-        {isDirector && (
+        {canManage && (
           <Button size="sm" onClick={() => setShowAdd(true)}>
             <UserPlus className="size-4" /> Add member
           </Button>
@@ -275,16 +307,14 @@ export default function RosterScreen() {
         <EmptyState
           icon={<Users className="size-6" />}
           title={isDirector ? "No members yet" : "Your section is empty"}
-          subtitle={
-            isDirector
-              ? "Add members so they can check in at events."
-              : "Ask your director to add section members."
-          }
+          subtitle="Add members so they can check in at events."
         />
       ) : (
         <div className="space-y-2">
           {members.map((m) => {
             const editable = isDirector && m.role !== "director";
+            const canRemove =
+              isSectionLeader && m.role === "student" && m.id !== profile.id;
             return (
               <Card
                 key={m.id}
@@ -323,41 +353,56 @@ export default function RosterScreen() {
                   {isDirector && m.role === "director" && (
                     <ShieldCheck className="size-5 text-gold" />
                   )}
-                  {editable && (
+                  {(editable || canRemove) && (
                     <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        onClick={() => void resetPassword(m)}
-                        disabled={busyId === m.id}
-                        className="rounded-full p-2 text-zinc-400 transition-colors hover:bg-gold/15 hover:text-gold-deep disabled:opacity-40 dark:text-zinc-500 dark:hover:text-gold"
-                        aria-label={`Reset password for ${m.display_name}`}
-                        title="Reset password"
-                      >
-                        <KeyRound className="size-4" />
-                      </button>
-                      <button
-                        onClick={() =>
-                          void (m.deactivated ? reactivate(m) : deactivate(m))
-                        }
-                        disabled={busyId === m.id}
-                        className={
-                          "rounded-full p-2 transition-colors disabled:opacity-40 " +
-                          (m.deactivated
-                            ? "text-forest hover:bg-moss dark:text-moss dark:hover:bg-forest/40"
-                            : "text-zinc-300 hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400")
-                        }
-                        aria-label={
-                          m.deactivated
-                            ? `Reactivate ${m.display_name}`
-                            : `Deactivate ${m.display_name}`
-                        }
-                        title={m.deactivated ? "Reactivate" : "Deactivate"}
-                      >
-                        {m.deactivated ? (
-                          <UserCheck className="size-4" />
-                        ) : (
-                          <Power className="size-4" />
-                        )}
-                      </button>
+                      {editable && (
+                        <>
+                          <button
+                            onClick={() => void resetPassword(m)}
+                            disabled={busyId === m.id}
+                            className="rounded-full p-2 text-zinc-400 transition-colors hover:bg-gold/15 hover:text-gold-deep disabled:opacity-40 dark:text-zinc-500 dark:hover:text-gold"
+                            aria-label={`Reset password for ${m.display_name}`}
+                            title="Reset password"
+                          >
+                            <KeyRound className="size-4" />
+                          </button>
+                          <button
+                            onClick={() =>
+                              void (m.deactivated ? reactivate(m) : deactivate(m))
+                            }
+                            disabled={busyId === m.id}
+                            className={
+                              "rounded-full p-2 transition-colors disabled:opacity-40 " +
+                              (m.deactivated
+                                ? "text-forest hover:bg-moss dark:text-moss dark:hover:bg-forest/40"
+                                : "text-zinc-300 hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400")
+                            }
+                            aria-label={
+                              m.deactivated
+                                ? `Reactivate ${m.display_name}`
+                                : `Deactivate ${m.display_name}`
+                            }
+                            title={m.deactivated ? "Reactivate" : "Deactivate"}
+                          >
+                            {m.deactivated ? (
+                              <UserCheck className="size-4" />
+                            ) : (
+                              <Power className="size-4" />
+                            )}
+                          </button>
+                        </>
+                      )}
+                      {canRemove && (
+                        <button
+                          onClick={() => void removeMember(m)}
+                          disabled={busyId === m.id}
+                          className="rounded-full p-2 text-zinc-300 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-40 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                          aria-label={`Remove ${m.display_name} from the roster`}
+                          title="Remove from roster"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -384,13 +429,17 @@ export default function RosterScreen() {
                         onChange={(e) =>
                           void changeRole(
                             m,
-                            e.target.value as "student" | "section_leader"
+                            e.target.value as
+                              | "student"
+                              | "section_leader"
+                              | "secretary"
                           )
                         }
                         className="!min-h-9 text-xs"
                       >
                         <option value="student">Student</option>
                         <option value="section_leader">Section leader</option>
+                        <option value="secretary">Secretary</option>
                       </Select>
                     </Field>
                   </div>
@@ -501,18 +550,24 @@ export default function RosterScreen() {
               required
             />
           </Field>
-          <Field label="Instrument / section">
-            <Select
-              value={addInstrument}
-              onChange={(e) => setAddInstrument(e.target.value)}
-            >
-              {INSTRUMENTS.map((i) => (
-                <option key={i} value={i}>
-                  {i}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          {isDirector ? (
+            <Field label="Instrument / section">
+              <Select
+                value={addInstrument}
+                onChange={(e) => setAddInstrument(e.target.value)}
+              >
+                {INSTRUMENTS.map((i) => (
+                  <option key={i} value={i}>
+                    {i}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          ) : (
+            <p className="rounded-xl bg-moss/30 px-3 py-2 text-xs font-semibold text-forest dark:bg-forest/30 dark:text-moss">
+              Will be added to the {profile.instrument || "your"} section.
+            </p>
+          )}
           <Button type="submit" size="lg" loading={adding} className="w-full">
             Add to roster
           </Button>

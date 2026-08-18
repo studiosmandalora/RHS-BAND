@@ -37,7 +37,9 @@ interface ActiveSession {
 export default function CheckInScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
-    profile.role === "director" || profile.role === "section_leader";
+    profile.role === "director" ||
+    profile.role === "secretary" ||
+    profile.role === "section_leader";
 
   const [upcomingEvents, setUpcomingEvents] = useState<EventRow[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);

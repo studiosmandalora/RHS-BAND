@@ -13,7 +13,9 @@ import { ProgressRing } from "../components/ProgressRing";
 export default function AttendanceScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
-    profile.role === "director" || profile.role === "section_leader";
+    profile.role === "director" ||
+    profile.role === "secretary" ||
+    profile.role === "section_leader";
   const isDirector = profile.role === "director";
 
   const [events, setEvents] = useState<EventRow[]>([]);

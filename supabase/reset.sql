@@ -16,8 +16,7 @@
 
 drop table if exists public.attendance_records cascade;
 drop table if exists public.checkin_sessions cascade;
-drop table if exists public.chat_messages cascade;
-drop table if exists public.chat_channels cascade;
+drop table if exists public.personal_events cascade;
 drop table if exists public.events cascade;
 drop table if exists public.app_settings cascade;
 drop table if exists public.notifications cascade;

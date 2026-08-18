@@ -2,7 +2,7 @@
 -- RHS Band Attendance Manager — Production seed (run AFTER supabase/schema.sql)
 -- ----------------------------------------------------------------------------
 -- The clean starting point for the real database: creates ONLY the director
--- account. No demo students, no fake events, no chat channels, no attendance.
+-- account. No demo students, no fake events, no attendance.
 --
 -- IMPORTANT — before running against production:
 --   1. Change the email below to the real director's email.

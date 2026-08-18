@@ -1,4 +1,4 @@
-export type Role = "student" | "section_leader" | "director";
+export type Role = "student" | "section_leader" | "secretary" | "director";
 
 export type EventType = "rehearsal" | "game" | "concert";
 
@@ -42,24 +42,16 @@ export interface AttendanceRow {
   checked_in_at: string | null;
 }
 
-export interface ChannelRow {
+export interface PersonalEventRow {
   id: string;
+  owner_id: string;
   name: string;
-  slug: string;
-  section: string;
-  is_general: boolean;
+  date: string;
+  location: string;
   created_at: string;
 }
 
-export interface MessageRow {
-  id: string;
-  channel_id: string;
-  sender_id: string;
-  text: string;
-  created_at: string;
-}
-
-export type NotificationType = "new_event" | "checkin_open" | "chat_message";
+export type NotificationType = "new_event" | "checkin_open";
 
 export interface NotificationRow {
   id: string;
@@ -70,8 +62,6 @@ export interface NotificationRow {
   payload: {
     event_id?: string;
     event_name?: string;
-    channel_id?: string;
-    sender_name?: string;
   };
   read: boolean;
   created_at: string;

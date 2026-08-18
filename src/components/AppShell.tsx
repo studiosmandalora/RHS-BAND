@@ -12,7 +12,6 @@ import {
   ClipboardCheck,
   KeyRound,
   LogOut,
-  MessageSquare,
   QrCode,
   User,
   Users,
@@ -148,7 +147,6 @@ function timeAgo(iso: string): string {
 
 function NotificationBell({ profile }: { profile: Profile }) {
   const navigate = useNavigate();
-  const location = useLocation();
   const [notifs, setNotifs] = useState<NotificationRow[]>([]);
   const [open, setOpen] = useState(false);
 
@@ -200,20 +198,6 @@ function NotificationBell({ profile }: { profile: Profile }) {
     };
   }, [profile.id]);
 
-  // Already on the Chat screen? Chat notifications are auto-read so the badge
-  // only reflects messages you'd have missed.
-  useEffect(() => {
-    if (!location.pathname.startsWith("/chat")) return;
-    const ids = notifs
-      .filter((n) => n.type === "chat_message" && !n.read)
-      .map((n) => n.id);
-    if (ids.length === 0) return;
-    void supabase.from("notifications").update({ read: true }).in("id", ids);
-    setNotifs((prev) =>
-      prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n))
-    );
-  }, [location.pathname, notifs]);
-
   const unreadCount = notifs.filter((n) => !n.read).length;
 
   function markAllRead() {
@@ -229,7 +213,6 @@ function NotificationBell({ profile }: { profile: Profile }) {
     setOpen(false);
     if (n.type === "new_event") navigate("/calendar");
     else if (n.type === "checkin_open") navigate("/checkin");
-    else if (n.type === "chat_message") navigate("/chat");
   }
 
   return (
@@ -308,12 +291,11 @@ function NotificationBell({ profile }: { profile: Profile }) {
 
 const TABS: { to: string; label: string; icon: typeof CalendarDays; roles: Role[] }[] =
   [
-    { to: "/", label: "Calendar", icon: CalendarDays, roles: ["student", "section_leader", "director"] },
-    { to: "/checkin", label: "Check-In", icon: QrCode, roles: ["student", "section_leader", "director"] },
-    { to: "/attendance", label: "Attendance", icon: ClipboardCheck, roles: ["student", "section_leader", "director"] },
-    { to: "/chat", label: "Chat", icon: MessageSquare, roles: ["student", "section_leader", "director"] },
+    { to: "/", label: "Calendar", icon: CalendarDays, roles: ["student", "section_leader", "secretary", "director"] },
+    { to: "/checkin", label: "Check-In", icon: QrCode, roles: ["student", "section_leader", "secretary", "director"] },
+    { to: "/attendance", label: "Attendance", icon: ClipboardCheck, roles: ["student", "section_leader", "secretary", "director"] },
     { to: "/roster", label: "Roster", icon: Users, roles: ["section_leader", "director"] },
-    { to: "/profile", label: "Profile", icon: User, roles: ["student", "section_leader", "director"] },
+    { to: "/profile", label: "Profile", icon: User, roles: ["student", "section_leader", "secretary", "director"] },
   ];
 
 export default function AppShell() {
