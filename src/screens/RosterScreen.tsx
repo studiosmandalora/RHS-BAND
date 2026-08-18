@@ -312,9 +312,10 @@ export default function RosterScreen() {
       ) : (
         <div className="space-y-2">
           {members.map((m) => {
+            // Only directors may remove members from the roster (deleting the
+            // account + profile). Section leaders manage their section but
+            // cannot delete anyone.
             const editable = isDirector && m.role !== "director";
-            const canRemove =
-              isSectionLeader && m.role === "student" && m.id !== profile.id;
             return (
               <Card
                 key={m.id}
@@ -353,56 +354,50 @@ export default function RosterScreen() {
                   {isDirector && m.role === "director" && (
                     <ShieldCheck className="size-5 text-gold" />
                   )}
-                  {(editable || canRemove) && (
+                  {editable && (
                     <div className="flex shrink-0 items-center gap-1">
-                      {editable && (
-                        <>
-                          <button
-                            onClick={() => void resetPassword(m)}
-                            disabled={busyId === m.id}
-                            className="rounded-full p-2 text-zinc-400 transition-colors hover:bg-gold/15 hover:text-gold-deep disabled:opacity-40 dark:text-zinc-500 dark:hover:text-gold"
-                            aria-label={`Reset password for ${m.display_name}`}
-                            title="Reset password"
-                          >
-                            <KeyRound className="size-4" />
-                          </button>
-                          <button
-                            onClick={() =>
-                              void (m.deactivated ? reactivate(m) : deactivate(m))
-                            }
-                            disabled={busyId === m.id}
-                            className={
-                              "rounded-full p-2 transition-colors disabled:opacity-40 " +
-                              (m.deactivated
-                                ? "text-forest hover:bg-moss dark:text-moss dark:hover:bg-forest/40"
-                                : "text-zinc-300 hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400")
-                            }
-                            aria-label={
-                              m.deactivated
-                                ? `Reactivate ${m.display_name}`
-                                : `Deactivate ${m.display_name}`
-                            }
-                            title={m.deactivated ? "Reactivate" : "Deactivate"}
-                          >
-                            {m.deactivated ? (
-                              <UserCheck className="size-4" />
-                            ) : (
-                              <Power className="size-4" />
-                            )}
-                          </button>
-                        </>
-                      )}
-                      {canRemove && (
-                        <button
-                          onClick={() => void removeMember(m)}
-                          disabled={busyId === m.id}
-                          className="rounded-full p-2 text-zinc-300 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-40 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-                          aria-label={`Remove ${m.display_name} from the roster`}
-                          title="Remove from roster"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      )}
+                      <button
+                        onClick={() => void resetPassword(m)}
+                        disabled={busyId === m.id}
+                        className="rounded-full p-2 text-zinc-400 transition-colors hover:bg-gold/15 hover:text-gold-deep disabled:opacity-40 dark:text-zinc-500 dark:hover:text-gold"
+                        aria-label={`Reset password for ${m.display_name}`}
+                        title="Reset password"
+                      >
+                        <KeyRound className="size-4" />
+                      </button>
+                      <button
+                        onClick={() =>
+                          void (m.deactivated ? reactivate(m) : deactivate(m))
+                        }
+                        disabled={busyId === m.id}
+                        className={
+                          "rounded-full p-2 transition-colors disabled:opacity-40 " +
+                          (m.deactivated
+                            ? "text-forest hover:bg-moss dark:text-moss dark:hover:bg-forest/40"
+                            : "text-zinc-300 hover:bg-red-50 hover:text-red-500 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400")
+                        }
+                        aria-label={
+                          m.deactivated
+                            ? `Reactivate ${m.display_name}`
+                            : `Deactivate ${m.display_name}`
+                        }
+                        title={m.deactivated ? "Reactivate" : "Deactivate"}
+                      >
+                        {m.deactivated ? (
+                          <UserCheck className="size-4" />
+                        ) : (
+                          <Power className="size-4" />
+                        )}
+                      </button>
+                      <button
+                        onClick={() => void removeMember(m)}
+                        disabled={busyId === m.id}
+                        className="rounded-full p-2 text-zinc-300 transition-colors hover:bg-red-50 hover:text-red-500 disabled:opacity-40 dark:text-zinc-600 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                        aria-label={`Remove ${m.display_name} from the roster`}
+                        title="Remove from roster (deletes account)"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
                     </div>
                   )}
                 </div>

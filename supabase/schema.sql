@@ -343,19 +343,10 @@ create policy "profiles_delete_director"
   on public.profiles for delete
   to authenticated
   using (
+    -- Only directors may delete profiles (and with it the auth account).
     -- Directors manage students, section leaders & secretaries — never another
     -- director (or themselves).
-    ((select public.user_role()) = 'director' and role <> 'director')
-    or
-    -- Section leaders may remove students from their own section (never
-    -- themselves, staff, or members of other sections).
-    (
-      (select public.user_role()) = 'section_leader'
-      and id <> auth.uid()
-      and role = 'student'
-      and (select instrument from public.profiles where id = auth.uid()) <> ''
-      and instrument = (select instrument from public.profiles where id = auth.uid())
-    )
+    (select public.user_role()) = 'director' and role <> 'director' and id <> auth.uid()
   );
 
 -- events -------------------------------------------------------------------
