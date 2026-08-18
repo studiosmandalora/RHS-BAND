@@ -405,13 +405,16 @@ create policy "checkin_sessions_read_owner_or_director"
 -- No INSERT / UPDATE / DELETE policies at all: the client can never write
 -- attendance directly. Everything goes through record_attendance() (QR scan)
 -- or override_attendance() (staff manual toggle).
+-- Read: yourself, or any staff member (director/secretary see everyone;
+-- section leaders are scoped to their own section) — this mirrors
+-- override_attendance() so staff can view what they may edit.
 drop policy if exists "attendance_read_self_staff" on public.attendance_records;
 create policy "attendance_read_self_staff"
   on public.attendance_records for select
   to authenticated
   using (
     student_id = auth.uid()
-    or (select public.user_role()) = 'director'
+    or (select public.user_role()) in ('director', 'secretary')
     or (
       (select public.user_role()) = 'section_leader'
       and exists (
