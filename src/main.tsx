@@ -10,3 +10,13 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </BrowserRouter>
 );
+
+// Register the service worker so the app can be installed and reopened reliably
+// when added to the home screen (and still load when offline).
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Registration is best-effort; the app still works without it.
+    });
+  });
+}
