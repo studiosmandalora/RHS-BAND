@@ -13,6 +13,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import type {
   EventRow,
   EventType,
@@ -163,9 +164,8 @@ function EventCard({
 
 export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
-  // Only directors and secretaries add band events; everyone adds personal ones.
-  const canAdd =
-    profile.role === "director" || profile.role === "secretary";
+  // Band events come from Google Calendar; everyone can still add personal ones.
+  const canAdd = false;
   const isDirector = profile.role === "director";
 
   const now = new Date();
@@ -206,6 +206,7 @@ export default function CalendarScreen() {
 
   async function loadEvents() {
     setLoading(true);
+    await syncGoogleCalendarEvents();
     const [band, personal] = await Promise.all([
       supabase.from("events").select("*").order("date", { ascending: true }),
       supabase
@@ -506,7 +507,7 @@ export default function CalendarScreen() {
             title="No events this day"
             subtitle={
               canAdd
-                ? "Tap “Add event” to schedule a band event, or add a personal one."
+                ? "Band events sync from Google Calendar. Add a personal one here if you need it."
                 : "Add a personal event to keep this day on your calendar."
             }
           />

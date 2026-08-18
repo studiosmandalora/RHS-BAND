@@ -59,12 +59,13 @@ export function fmtTime(iso: string | Date): string {
   });
 }
 
-export function fmtDateTime(iso: string): string {
+export function fmtDateTime(iso: string, allDay = false): string {
   const d = new Date(iso);
-  return `${d.toLocaleDateString("en-US", {
+  const date = d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
-  })} · ${fmtTime(iso)}`;
+  });
+  return allDay ? `${date} - All day` : `${date} - ${fmtTime(iso)}`;
 }
 
 /** "Today", "Tomorrow", "Yesterday", or "Thu, Sep 3". */

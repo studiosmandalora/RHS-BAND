@@ -20,7 +20,13 @@ export interface EventRow {
   name: string;
   type: EventType;
   date: string;
+  end_date: string | null;
+  all_day: boolean;
   location: string;
+  description: string;
+  google_calendar_uid: string | null;
+  google_calendar_updated_at: string | null;
+  google_calendar_synced_at: string | null;
   created_by: string;
   created_at: string;
 }
@@ -47,7 +53,13 @@ export interface PersonalEventRow {
   owner_id: string;
   name: string;
   date: string;
+  end_date: string | null;
+  all_day: boolean;
   location: string;
+  description: string;
+  google_calendar_uid: string | null;
+  google_calendar_updated_at: string | null;
+  google_calendar_synced_at: string | null;
   created_at: string;
 }
 

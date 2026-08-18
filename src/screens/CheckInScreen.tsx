@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import {
   recordAttendance,
   recordAttendanceByCode,
@@ -74,24 +75,26 @@ export default function CheckInScreen() {
   /* ------------------------- upcoming events ----------------------------- */
   useEffect(() => {
     let cancelled = false;
-    supabase
-      .from("events")
-      .select("*")
-      .gte("date", startOfDay(new Date()).toISOString())
-      .order("date", { ascending: true })
-      .limit(20)
-      .then(({ data }) => {
-        if (cancelled) return;
-        const rows = (data as EventRow[]) ?? [];
-        setUpcomingEvents(rows);
-        setSelectedEvent((prev) => {
-          // Keep the current pick if it's still upcoming; otherwise default to
-          // the earliest. Two events can share a date, so we never collapse to
-          // a single "next" event.
-          if (prev && rows.some((e) => e.id === prev.id)) return prev;
-          return rows[0] ?? null;
+    void syncGoogleCalendarEvents().finally(() => {
+      supabase
+        .from("events")
+        .select("*")
+        .gte("date", startOfDay(new Date()).toISOString())
+        .order("date", { ascending: true })
+        .limit(20)
+        .then(({ data }) => {
+          if (cancelled) return;
+          const rows = (data as EventRow[]) ?? [];
+          setUpcomingEvents(rows);
+          setSelectedEvent((prev) => {
+            // Keep the current pick if it's still upcoming; otherwise default to
+            // the earliest. Two events can share a date, so we never collapse to
+            // a single "next" event.
+            if (prev && rows.some((e) => e.id === prev.id)) return prev;
+            return rows[0] ?? null;
+          });
         });
-      });
+    });
     return () => {
       cancelled = true;
     };
@@ -394,7 +397,7 @@ export default function CheckInScreen() {
                   {selectedEvent.name}
                 </p>
                 <p className="mt-0.5 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  <Clock className="size-3.5" /> {fmtTime(selectedEvent.date)}
+                  <Clock className="size-3.5" /> {selectedEvent.all_day ? "All day" : fmtTime(selectedEvent.date)}
                   {selectedEvent.location && (
                     <>
                       <span>·</span>

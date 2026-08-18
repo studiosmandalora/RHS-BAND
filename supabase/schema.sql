@@ -122,7 +122,13 @@ create table if not exists public.events (
   name       text not null,
   type       text not null check (type in ('rehearsal', 'game', 'concert')),
   date       timestamptz not null,
+  end_date   timestamptz,
+  all_day    boolean not null default false,
   location   text not null default '',
+  description text not null default '',
+  google_calendar_uid text unique,
+  google_calendar_updated_at timestamptz,
+  google_calendar_synced_at timestamptz,
   -- Informational only (the RLS insert policy just requires it to be the
   -- current user). Nullable so an event survives if its creator is later
   -- removed from the roster.
@@ -130,7 +136,17 @@ create table if not exists public.events (
   created_at timestamptz not null default now()
 );
 
+-- Idempotent migration for databases created before Google Calendar sync.
+alter table public.events add column if not exists end_date timestamptz;
+alter table public.events add column if not exists all_day boolean not null default false;
+alter table public.events add column if not exists description text not null default '';
+alter table public.events add column if not exists google_calendar_uid text unique;
+alter table public.events add column if not exists google_calendar_updated_at timestamptz;
+alter table public.events add column if not exists google_calendar_synced_at timestamptz;
+
 create index if not exists events_date_idx on public.events (date);
+create index if not exists events_google_calendar_uid_idx
+  on public.events (google_calendar_uid);
 
 -- ---------------------------------------------------------------------------
 -- 3. Check-in sessions (QR codes)
@@ -995,6 +1011,10 @@ security definer
 set search_path = public
 as $$
 begin
+  if current_setting('app.suppress_event_notifications', true) = 'true' then
+    return new;
+  end if;
+
   insert into public.notifications (user_id, type, title, body, payload)
   select p.id, 'new_event', 'New event added', new.name,
          jsonb_build_object('event_id', new.id, 'event_name', new.name)
@@ -1236,6 +1256,112 @@ grant execute on function public.update_member_instrument(uuid, text) to authent
 grant execute on function public.validate_band_join_code(text) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- 8d. Google Calendar sync
+-- ---------------------------------------------------------------------------
+-- Called by the sync_google_calendar Edge Function with service-role rights.
+-- The Google Calendar feed becomes the source of truth for band events: the
+-- first sync removes old in-app events, then future syncs upsert by Google UID
+-- and delete synced events that disappeared from the feed.
+create or replace function public.sync_google_calendar_events(
+  p_events jsonb,
+  p_replace_all boolean default true
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_event jsonb;
+  v_seen text[] := '{}';
+  v_inserted int := 0;
+  v_updated int := 0;
+  v_deleted int := 0;
+  v_deleted_now int := 0;
+  v_existing uuid;
+begin
+  perform set_config('app.suppress_event_notifications', 'true', true);
+
+  if p_replace_all then
+    delete from public.events where google_calendar_uid is null;
+    get diagnostics v_deleted = row_count;
+  end if;
+
+  for v_event in select * from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) loop
+    if coalesce(v_event ->> 'uid', '') = '' then
+      continue;
+    end if;
+
+    v_seen := array_append(v_seen, v_event ->> 'uid');
+    select id into v_existing
+      from public.events
+     where google_calendar_uid = v_event ->> 'uid';
+
+    insert into public.events (
+      name,
+      type,
+      date,
+      end_date,
+      all_day,
+      location,
+      description,
+      google_calendar_uid,
+      google_calendar_updated_at,
+      google_calendar_synced_at,
+      created_by
+    ) values (
+      coalesce(nullif(v_event ->> 'name', ''), 'Untitled event'),
+      coalesce(nullif(v_event ->> 'type', ''), 'rehearsal'),
+      (v_event ->> 'date')::timestamptz,
+      nullif(v_event ->> 'end_date', '')::timestamptz,
+      coalesce((v_event ->> 'all_day')::boolean, false),
+      coalesce(v_event ->> 'location', ''),
+      coalesce(v_event ->> 'description', ''),
+      v_event ->> 'uid',
+      nullif(v_event ->> 'updated_at', '')::timestamptz,
+      now(),
+      null
+    )
+    on conflict (google_calendar_uid) do update set
+      name = excluded.name,
+      type = excluded.type,
+      date = excluded.date,
+      end_date = excluded.end_date,
+      all_day = excluded.all_day,
+      location = excluded.location,
+      description = excluded.description,
+      google_calendar_updated_at = excluded.google_calendar_updated_at,
+      google_calendar_synced_at = excluded.google_calendar_synced_at;
+
+    if v_existing is null then
+      v_inserted := v_inserted + 1;
+    else
+      v_updated := v_updated + 1;
+    end if;
+  end loop;
+
+  delete from public.events
+   where google_calendar_uid is not null
+     and not (google_calendar_uid = any(v_seen));
+  get diagnostics v_deleted_now = row_count;
+  v_deleted := v_deleted + v_deleted_now;
+
+  return jsonb_build_object(
+    'ok', true,
+    'inserted', v_inserted,
+    'updated', v_updated,
+    'deleted', v_deleted,
+    'seen', coalesce(array_length(v_seen, 1), 0)
+  );
+exception
+  when others then
+    return jsonb_build_object('ok', false, 'message', 'Google Calendar sync failed: ' || sqlerrm);
+end;
+$$;
+
+revoke execute on function public.sync_google_calendar_events(jsonb, boolean) from anon, authenticated;
+grant execute on function public.sync_google_calendar_events(jsonb, boolean) to service_role;
 -- 9. Storage — avatar photos
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
