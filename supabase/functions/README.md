@@ -44,6 +44,11 @@ old in-app events, then future syncs update by Google event UID.
 supabase functions deploy sync_google_calendar
 ```
 
+The function must be deployed with `verify_jwt = false` (already set in
+`supabase/config.toml`) — otherwise the platform rejects calls that use the
+sync secret before the function's own auth check runs. The function still
+accepts signed-in users' JWTs; the secret is an extra path for cron jobs.
+
 The function has the RHS Band calendar's public `basic.ics` URL baked in. To
 change it without editing code:
 
