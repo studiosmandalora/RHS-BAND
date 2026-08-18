@@ -24,7 +24,7 @@ import type { NotificationRow, Profile, Role } from "../lib/types";
 function Splash() {
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-forest">
-      <img src="/logo-dark.svg" alt="RHS Band" className="h-16 w-auto" />
+      <img src="/logo-dark.svg" alt="RHS Band" className="h-24 w-auto" />
       <p className="text-sm font-semibold text-white/80">Band Attendance</p>
       <div className="size-2 animate-pulse rounded-full bg-gold" />
     </div>
@@ -374,12 +374,12 @@ export default function AppShell() {
           <img
             src="/logo-light.svg"
             alt="RHS Band"
-            className="h-7 w-auto dark:hidden"
+            className="h-9 w-auto dark:hidden"
           />
           <img
             src="/logo-dark.svg"
             alt="RHS Band"
-            className="hidden h-7 w-auto dark:block"
+            className="hidden h-9 w-auto dark:block"
           />
           <NotificationBell profile={profile} />
         </div>

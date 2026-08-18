@@ -87,6 +87,32 @@ export function initials(name: string): string {
     .join("");
 }
 
+/**
+ * Google Calendar "Add to calendar" deep link. No API key / OAuth needed — it
+ * opens the Google Calendar app on mobile or calendar.google.com on desktop.
+ * Timed events use the YYYYMMDDTHHMMSSZ (UTC) format; defaults to 1 hour long.
+ */
+export function googleCalendarUrl(opts: {
+  name: string;
+  date: string;
+  location?: string;
+  details?: string;
+  durationMs?: number;
+}): string {
+  const start = new Date(opts.date);
+  const end = new Date(start.getTime() + (opts.durationMs ?? 60 * 60 * 1000));
+  const fmt = (d: Date) =>
+    d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: opts.name,
+    dates: `${fmt(start)}/${fmt(end)}`,
+    location: opts.location ?? "",
+    details: opts.details ?? "",
+  });
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 export function parseTokenFromString(decoded: string): string | null {
   try {
     if (decoded.includes("?token=")) {

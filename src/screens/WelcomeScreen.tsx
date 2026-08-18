@@ -145,7 +145,7 @@ export default function WelcomeScreen() {
 
       <div className="relative z-10 flex flex-1 flex-col px-6 pb-8 pt-14">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <img src="/logo-dark.svg" alt="RHS Band" className="h-16 w-auto" />
+          <img src="/logo-dark.svg" alt="RHS Band" className="h-24 w-auto" />
           <div>
             <h1 className="text-2xl font-black tracking-tight text-white">
               RHS Band Attendance

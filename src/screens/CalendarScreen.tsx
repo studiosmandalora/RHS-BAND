@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   CalendarDays,
+  CalendarPlus,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -22,6 +23,7 @@ import {
   addMonths,
   fmtDateTime,
   fmtMonthYear,
+  googleCalendarUrl,
   isSameDay,
   monthMatrix,
   relativeDay,
@@ -76,10 +78,18 @@ function PersonalEventCard({
           )}
         </div>
       </div>
+      <a
+        href={googleCalendarUrl(event)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-black/10 px-3 text-xs font-semibold text-sky-600 transition-colors hover:bg-sky-50 dark:border-white/15 dark:text-sky-400 dark:hover:bg-sky-950/40"
+      >
+        <CalendarPlus className="size-4" /> Add to Google Calendar
+      </a>
       <Button
         size="sm"
         variant="outline"
-        className="mt-3 w-full text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+        className="mt-2 w-full text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
         loading={deleting}
         onClick={() => onDelete(event)}
       >
@@ -128,11 +138,19 @@ function EventCard({
           )}
         </div>
       </div>
+      <a
+        href={googleCalendarUrl(event)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-3 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-black/10 px-3 text-xs font-semibold text-forest transition-colors hover:bg-moss dark:border-white/15 dark:text-moss dark:hover:bg-forest/40"
+      >
+        <CalendarPlus className="size-4" /> Add to Google Calendar
+      </a>
       {onRemind && (
         <Button
           size="sm"
           variant="outline"
-          className="mt-3 w-full"
+          className="mt-2 w-full"
           loading={reminding}
           onClick={() => onRemind(event)}
         >
