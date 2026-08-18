@@ -12,6 +12,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import type {
@@ -44,6 +45,24 @@ import {
 } from "../components/ui";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
+
+/**
+ * Surface the real error message a Supabase Edge Function returns, instead of
+ * the generic "Edge Function returned a non-2xx status code". The function's
+ * JSON body (e.g. "Email reminders aren't configured yet…") lives in the
+ * error's `context` Response.
+ */
+async function functionsErrorMessage(e: unknown): Promise<string> {
+  if (e instanceof FunctionsHttpError) {
+    try {
+      const body = (await e.context.json()) as { message?: string } | null;
+      if (body?.message) return body.message;
+    } catch {
+      // Not a JSON body — fall through to the generic message below.
+    }
+  }
+  return e instanceof Error ? e.message : "Couldn't send the reminder.";
+}
 
 function PersonalEventCard({
   event,
@@ -318,7 +337,7 @@ export default function CalendarScreen() {
     } catch (e) {
       setRemindMsg({
         tone: "error",
-        text: e instanceof Error ? e.message : "Couldn't send the reminder.",
+        text: await functionsErrorMessage(e),
       });
     } finally {
       setRemindingId(null);
