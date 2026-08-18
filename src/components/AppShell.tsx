@@ -26,7 +26,15 @@ function Splash() {
     <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-forest">
       <img src="/logo-dark.svg" alt="RHS Band" className="h-56 w-auto" />
       <p className="text-sm font-semibold text-white/80">Band Attendance</p>
-      <div className="size-2 animate-pulse rounded-full bg-gold" />
+      <div className="loader" role="status" aria-label="Loading">
+        {[0, 1, 2, 3, 4].map((index) => (
+          <div
+            key={index}
+            className="orbe"
+            style={{ "--index": index } as React.CSSProperties}
+          />
+        ))}
+      </div>
     </div>
   );
 }
