@@ -20,6 +20,7 @@ import {
   reactivateMember,
   resetMemberPassword,
   setBandJoinCode,
+  updateMemberInstrument,
 } from "../lib/rpc";
 import type { Profile } from "../lib/types";
 import { INSTRUMENTS, ROLE_CHIP, ROLE_LABEL } from "../lib/constants";
@@ -135,12 +136,17 @@ export default function RosterScreen() {
 
   async function changeInstrument(member: Profile, instrument: string) {
     setError(null);
-    const { error } = await supabase
-      .from("profiles")
-      .update({ instrument })
-      .eq("id", member.id);
-    if (error) setError(error.message);
-    else void load();
+    const { result, error } = await updateMemberInstrument(
+      member.id,
+      instrument
+    );
+    if (error || !result?.ok) {
+      setError(
+        error?.message ?? result?.message ?? "Could not update instrument."
+      );
+      return;
+    }
+    void load();
   }
 
   /* ----------------------- deactivate / reactivate ----------------------- */
@@ -312,10 +318,16 @@ export default function RosterScreen() {
       ) : (
         <div className="space-y-2">
           {members.map((m) => {
-            // Only directors may remove members from the roster (deleting the
-            // account + profile). Section leaders manage their section but
-            // cannot delete anyone.
+            // Directors can manage everyone except other directors. Section
+            // leaders can only change the instrument of students in their own
+            // section (instrument matches theirs) — never roles, passwords,
+            // deactivation, or deletion.
             const editable = isDirector && m.role !== "director";
+            const canEditInstrument =
+              editable ||
+              (isSectionLeader &&
+                m.role === "student" &&
+                m.instrument === profile.instrument);
             return (
               <Card
                 key={m.id}
@@ -402,41 +414,45 @@ export default function RosterScreen() {
                   )}
                 </div>
 
-                {editable && (
+                {(editable || canEditInstrument) && (
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    <Field label="Instrument">
-                      <Select
-                        value={m.instrument}
-                        onChange={(e) => void changeInstrument(m, e.target.value)}
-                        className="!min-h-9 text-xs"
-                      >
-                        <option value="">—</option>
-                        {INSTRUMENTS.map((i) => (
-                          <option key={i} value={i}>
-                            {i}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <Field label="Role">
-                      <Select
-                        value={m.role}
-                        onChange={(e) =>
-                          void changeRole(
-                            m,
-                            e.target.value as
-                              | "student"
-                              | "section_leader"
-                              | "secretary"
-                          )
-                        }
-                        className="!min-h-9 text-xs"
-                      >
-                        <option value="student">Student</option>
-                        <option value="section_leader">Section leader</option>
-                        <option value="secretary">Secretary</option>
-                      </Select>
-                    </Field>
+                    {canEditInstrument && (
+                      <Field label="Instrument">
+                        <Select
+                          value={m.instrument}
+                          onChange={(e) => void changeInstrument(m, e.target.value)}
+                          className="!min-h-9 text-xs"
+                        >
+                          <option value="">—</option>
+                          {INSTRUMENTS.map((i) => (
+                            <option key={i} value={i}>
+                              {i}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+                    )}
+                    {editable && (
+                      <Field label="Role">
+                        <Select
+                          value={m.role}
+                          onChange={(e) =>
+                            void changeRole(
+                              m,
+                              e.target.value as
+                                | "student"
+                                | "section_leader"
+                                | "secretary"
+                            )
+                          }
+                          className="!min-h-9 text-xs"
+                        >
+                          <option value="student">Student</option>
+                          <option value="section_leader">Section leader</option>
+                          <option value="secretary">Secretary</option>
+                        </Select>
+                      </Field>
+                    )}
                   </div>
                 )}
               </Card>

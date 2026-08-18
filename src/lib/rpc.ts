@@ -49,6 +49,12 @@ export const getBandJoinCode = () => callRpc("get_band_join_code", {});
 export const validateBandJoinCode = (code: string) =>
   callRpc("validate_band_join_code", { p_code: code });
 
+export const updateMemberInstrument = (memberId: string, instrument: string) =>
+  callRpc("update_member_instrument", {
+    p_member_id: memberId,
+    p_instrument: instrument,
+  });
+
 export const resetMemberPassword = (memberId: string) =>
   callRpc("reset_member_password", { p_member_id: memberId });
 

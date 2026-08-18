@@ -1150,6 +1150,57 @@ begin
 end;
 $$;
 
+-- Change a member's instrument/section. Directors may change anyone's
+-- (except other directors); section leaders may only change members whose
+-- instrument already matches their own (i.e. their own section) — they cannot
+-- move members between sections or touch other sections.
+create or replace function public.update_member_instrument(
+  p_member_id uuid,
+  p_instrument text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid  uuid := auth.uid();
+  v_role public.app_role := public.user_role();
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  if v_role = 'director' then
+    if not exists (select 1 from public.profiles where id = p_member_id) then
+      return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
+    end if;
+    if (select role from public.profiles where id = p_member_id) = 'director' then
+      return jsonb_build_object('ok', false, 'message', 'Directors cannot change another director''s instrument.');
+    end if;
+  elsif v_role = 'section_leader' then
+    -- Section leaders: the member must already be in their own section
+    -- (same instrument), and must not be themselves or another staff member.
+    if not exists (
+      select 1 from public.profiles s
+      where s.id = p_member_id
+        and s.role = 'student'
+        and s.instrument <> ''
+        and s.instrument = (select instrument from public.profiles where id = v_uid)
+    ) then
+      return jsonb_build_object('ok', false, 'message', 'You can only change instruments of students in your own section.');
+    end if;
+  else
+    return jsonb_build_object('ok', false, 'message', 'Only staff may change instruments.');
+  end if;
+
+  update public.profiles set instrument = p_instrument where id = p_member_id;
+  return jsonb_build_object('ok', true);
+exception
+  when others then
+    return jsonb_build_object('ok', false, 'message', 'Could not update instrument.');
+end;
+$$;
+
 -- Director-only getter for the current join code (so the Roster screen can
 -- display it). The code is a shared secret, so this is gated on role — the
 -- boolean-only get_band_join_code_status() remains the public-facing check.
@@ -1181,6 +1232,7 @@ grant execute on function public.get_band_join_code() to authenticated;
 grant execute on function public.reset_member_password(uuid) to authenticated;
 grant execute on function public.deactivate_member(uuid) to authenticated;
 grant execute on function public.reactivate_member(uuid) to authenticated;
+grant execute on function public.update_member_instrument(uuid, text) to authenticated;
 grant execute on function public.validate_band_join_code(text) to anon, authenticated;
 
 -- ---------------------------------------------------------------------------
