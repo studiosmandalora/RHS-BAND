@@ -128,8 +128,7 @@ Deno.serve(async (req) => {
     const [rosterRes, attRes, users] = await Promise.all([
       supabase
         .from("profiles")
-        .select("id, full_name, display_name, deactivated")
-        .neq("role", "director")
+        .select("id, full_name, display_name, deactivated, roles")
         .eq("deactivated", false),
       supabase
         .from("attendance_records")
@@ -142,7 +141,10 @@ Deno.serve(async (req) => {
     const checkedIn = new Set((attRes.data ?? []).map((r) => r.student_id));
     const emailById = new Map(users.map((u) => [u.id, u.email]));
     const recipients = (rosterRes.data ?? []).filter(
-      (p) => !checkedIn.has(p.id) && emailById.get(p.id)
+      (p) =>
+        !p.roles?.includes("director") &&
+        !checkedIn.has(p.id) &&
+        Boolean(emailById.get(p.id))
     );
 
     // 6. Send the reminder to each.
