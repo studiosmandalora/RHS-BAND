@@ -36,21 +36,9 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** Fetch every auth user (emails live on auth.users, not profiles). */
-async function listAllUsers(): Promise<{ id: string; email: string | null }[]> {
-  const users: { id: string; email: string | null }[] = [];
-  let page = 1;
-  const perPage = 1000;
-  for (;;) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
-    if (error) throw new Error(error.message);
-    const rows = data?.users ?? [];
-    for (const u of rows) users.push({ id: u.id, email: u.email ?? null });
-    if (rows.length === 0 || users.length >= (data?.total ?? users.length)) break;
-    page += 1;
-  }
-  return users;
-}
+// Member emails live on auth.users (not profiles). We read them through the
+// get_roster_emails() RPC below instead of auth.admin.listUsers(), which is
+// paginated and has been failing with "no users found in database".
 
 /** Send one email through the SendGrid v3 API. */
 async function sendEmail(to: { email: string; name: string }, subject: string, text: string) {
@@ -125,7 +113,7 @@ Deno.serve(async (req) => {
 
     // 5. Everyone who hasn't checked in yet: roster members (not directors,
     //    not deactivated) with no attended record for this event.
-    const [rosterRes, attRes, users] = await Promise.all([
+    const [rosterRes, attRes, emailRes] = await Promise.all([
       supabase
         .from("profiles")
         .select("id, full_name, display_name, deactivated, roles")
@@ -135,11 +123,23 @@ Deno.serve(async (req) => {
         .select("student_id")
         .eq("event_id", eventId)
         .eq("attended", true),
-      listAllUsers(),
+      supabase.rpc("get_roster_emails"),
     ]);
 
+    if (emailRes.error) {
+      return json({
+        ok: false,
+        message:
+          "Couldn't load member emails. Run the latest supabase/schema.sql in the SQL editor (adds get_roster_emails), then redeploy send_signup_reminder.",
+      }, 500);
+    }
+
     const checkedIn = new Set((attRes.data ?? []).map((r) => r.student_id));
-    const emailById = new Map(users.map((u) => [u.id, u.email]));
+    const emailById = new Map(
+      ((emailRes.data as { id: string; email: string | null }[] | null) ?? []).map(
+        (u) => [u.id, u.email]
+      )
+    );
     const recipients = (rosterRes.data ?? []).filter(
       (p) =>
         !p.roles?.includes("director") &&

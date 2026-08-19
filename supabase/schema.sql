@@ -1443,6 +1443,27 @@ $$;
 
 revoke execute on function public.sync_google_calendar_events(jsonb, boolean) from anon, authenticated;
 grant execute on function public.sync_google_calendar_events(jsonb, boolean) to service_role;
+
+-- Emails for the absent-member reminder Edge Function (send_signup_reminder).
+-- Email addresses live on auth.users, not profiles, and the admin listUsers API
+-- is paginated and has been failing with "no users found in database", so a
+-- security-definer join returns exactly the roster members' emails.
+-- Service-role only (same as the Google Calendar sync RPC above).
+create or replace function public.get_roster_emails()
+returns table (id uuid, email text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.id, u.email
+  from public.profiles p
+  join auth.users u on u.id = p.id
+  where coalesce(u.email, '') <> '';
+$$;
+
+revoke execute on function public.get_roster_emails() from anon, authenticated;
+grant execute on function public.get_roster_emails() to service_role;
 -- 9. Storage — avatar photos
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)

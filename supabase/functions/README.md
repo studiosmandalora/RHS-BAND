@@ -8,6 +8,9 @@ emails — see `docs/email-setup.md`).
 
 ### Deploy
 
+Requires the `get_roster_emails()` Postgres function from `supabase/schema.sql`
+(run it in the SQL editor first), then:
+
 ```bash
 npm i -g supabase        # or npx supabase
 supabase functions deploy send_signup_reminder
