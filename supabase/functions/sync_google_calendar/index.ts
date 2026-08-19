@@ -8,10 +8,18 @@
 //   CALENDAR_SYNC_SECRET=some-long-random-value  (for scheduled cron calls)
 // ============================================================================
 
-import { createClient } from "npm:@supabase/supabase-js@2";
+/// <reference path="../deno-types.d.ts" />
 
-const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+import { createClient } from "@supabase/supabase-js";
+
+function requiredEnv(name: string): string {
+  const value = Deno.env.get(name);
+  if (!value) throw new Error(`Missing required environment variable: ${name}`);
+  return value;
+}
+
+const supabaseUrl = requiredEnv("SUPABASE_URL");
+const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
 const calendarIcsUrl =
   Deno.env.get("GOOGLE_CALENDAR_ICS_URL") ??
   "https://calendar.google.com/calendar/ical/9f3763f58e6882a95ca8064b93de88d329622698cfcaa9e2450b58c594b2c48e%40group.calendar.google.com/public/basic.ics";
@@ -43,6 +51,10 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+function isSyncResult(value: unknown): value is Record<string, unknown> & { ok: boolean } {
+  return typeof value === "object" && value !== null && "ok" in value && typeof value.ok === "boolean";
 }
 
 function unfoldIcs(text: string): string[] {
@@ -226,6 +238,9 @@ Deno.serve(async (req) => {
       p_replace_all: true,
     });
     if (error) throw error;
+    if (isSyncResult(data) && !data.ok) {
+      throw new Error(typeof data.message === "string" ? data.message : "Calendar sync RPC failed.");
+    }
 
     return json({ ...(data ?? {}), fetched: events.length });
   } catch (e) {

@@ -70,6 +70,7 @@ export default function CheckInScreen() {
 
   // student: scanner
   const [scanOpen, setScanOpen] = useState(false);
+  const [scanAttempt, setScanAttempt] = useState(0);
   const [scanState, setScanState] = useState<
     "scanning" | "processing" | "success" | "error"
   >("scanning");
@@ -365,8 +366,11 @@ export default function CheckInScreen() {
           });
       }
     };
+    // scanAttempt lets "Try again" tear down the old scanner and start a
+    // fresh one — otherwise retrying just reset the text and left a dead
+    // camera feed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scanOpen]);
+  }, [scanOpen, scanAttempt]);
 
   /* ------------------------------- render -------------------------------- */
   return (
@@ -652,6 +656,9 @@ export default function CheckInScreen() {
                     onClick={() => {
                       setScanState("scanning");
                       setScanMessage(null);
+                      // Restart the camera from scratch (the previous scanner
+                      // was stopped after a decode or failed to start).
+                      setScanAttempt((n) => n + 1);
                     }}
                   >
                     Try again
