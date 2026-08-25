@@ -42,17 +42,18 @@ export const ROLE_CHIP: Record<Role, string> = {
   director: "bg-forest text-white",
 };
 
-export function demoAccounts(): { email: string; note: string }[] {
+export function demoAccounts(): { email: string; note: string; password: string }[] {
   return [
-    { email: "director@rhsband.org", note: "Director — full admin" },
-    { email: "secretary@rhsband.org", note: "Secretary — events & check-in" },
-    { email: "tyler.nguyen@rhsband.org", note: "Trumpet section leader" },
-    { email: "ava.rodriguez@rhsband.org", note: "Flutes" },
-    { email: "mia.chen@rhsband.org", note: "Clarinets" },
-    { email: "noah.williams@rhsband.org", note: "Saxophones" },
-    { email: "ethan.patel@rhsband.org", note: "Percussion" },
-    { email: "lily.johnson@rhsband.org", note: "Trombones" },
-    { email: "diego.silva@rhsband.org", note: "Baritones" },
-    { email: "chloe.brooks@rhsband.org", note: "Flutes" },
+    { email: "guest@checkin.com", note: "Guest — staff view", password: "Guest123" },
+    { email: "director@rhsband.org", note: "Director — full admin", password: "band1234" },
+    { email: "secretary@rhsband.org", note: "Secretary — events & check-in", password: "band1234" },
+    { email: "tyler.nguyen@rhsband.org", note: "Trumpet section leader", password: "band1234" },
+    { email: "ava.rodriguez@rhsband.org", note: "Flutes", password: "band1234" },
+    { email: "mia.chen@rhsband.org", note: "Clarinets", password: "band1234" },
+    { email: "noah.williams@rhsband.org", note: "Saxophones", password: "band1234" },
+    { email: "ethan.patel@rhsband.org", note: "Percussion", password: "band1234" },
+    { email: "lily.johnson@rhsband.org", note: "Trombones", password: "band1234" },
+    { email: "diego.silva@rhsband.org", note: "Baritones", password: "band1234" },
+    { email: "chloe.brooks@rhsband.org", note: "Flutes", password: "band1234" },
   ];
 }

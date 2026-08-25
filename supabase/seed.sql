@@ -5,7 +5,8 @@
 -- a few past + upcoming events and attendance history, so the app is
 -- demoable immediately.
 --
--- All demo accounts use the password:  band1234
+-- Most demo accounts use the password:  band1234
+--   guest@checkin.com        → Camille Gates   (guest — staff view; password: Guest123)
 --   director@rhsband.org     → Marissa Bennett (director)
 --   tyler.nguyen@rhsband.org → Tyler Nguyen    (trumpet, section leader)
 --   ava.rodriguez@...        etc. (students across sections)
@@ -263,6 +264,31 @@ begin
       'email', v_id::text, now(), now(), now()
     );
   end if;
+
+  -- ---------- Camille Gates — guest (prospective orchestra director) ----------
+  -- A low-touch viewer account: secretary role (events & check-in staff view,
+  -- no roster admin) so someone trying the app for their own orchestra can
+  -- look around without full administrative powers.
+  v_id := '5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e';
+  if not exists (select 1 from auth.users where id = v_id) then
+    insert into auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) values (
+      v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+      'guest@checkin.com', crypt('Guest123', gen_salt('bf', 10)), now(),
+      '{}'::jsonb,
+      '{"full_name":"Camille Gates","display_name":"Camille","instrument":""}',
+      now(), now()
+    );
+    insert into auth.identities (
+      id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
+    ) values (
+      v_id, v_id,
+      jsonb_build_object('sub', v_id::text, 'email', 'guest@checkin.com'),
+      'email', v_id::text, now(), now(), now()
+    );
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -282,7 +308,8 @@ values
   ('1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a', 'Lily Johnson',    'Lily',        'Trombone',    '{student}',              false),
   ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    '{student}',              false),
   ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Flute',       '{student}',              false),
-  ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            '{secretary}',            false)
+  ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            '{secretary}',            false),
+  ('5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e', 'Camille Gates',   'Camille',     '',            '{secretary}',            false)
 on conflict (id) do update
   set full_name = excluded.full_name,
       display_name = excluded.display_name,
@@ -315,7 +342,8 @@ update auth.users
    'ethan.patel@rhsband.org',
    'lily.johnson@rhsband.org',
    'diego.silva@rhsband.org',
-   'chloe.brooks@rhsband.org'
+   'chloe.brooks@rhsband.org',
+   'guest@checkin.com'
  );
 
 -- ---------------------------------------------------------------------------

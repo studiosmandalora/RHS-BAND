@@ -112,9 +112,9 @@ export default function WelcomeScreen() {
     }
   }
 
-  function quickFill(em: string) {
-    setEmail(em);
-    setPassword("band1234");
+  function quickFill(acc: { email: string; password: string }) {
+    setEmail(acc.email);
+    setPassword(acc.password);
     setMode("signin");
     setError(null);
   }
@@ -318,17 +318,20 @@ export default function WelcomeScreen() {
         {showDemoAccounts && (
           <details className="mt-6 w-full max-w-sm self-center rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
             <summary className="cursor-pointer text-sm font-semibold text-white/90">
-              Demo accounts (password: band1234)
+              Demo accounts
             </summary>
             <div className="mt-3 space-y-1.5">
               {demoAccounts().map((acc) => (
                 <button
                   key={acc.email}
-                  onClick={() => quickFill(acc.email)}
+                  onClick={() => quickFill(acc)}
                   className="flex w-full items-center justify-between gap-2 rounded-xl bg-white/5 px-3 py-2 text-left text-xs text-white/85 transition-colors hover:bg-white/10"
                 >
                   <span className="font-mono">{acc.email}</span>
                   <span className="shrink-0 text-white/60">{acc.note}</span>
+                  <span className="shrink-0 font-mono text-white/45">
+                    {acc.password}
+                  </span>
                 </button>
               ))}
             </div>
