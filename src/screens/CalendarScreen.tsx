@@ -48,6 +48,16 @@ import {
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 
 /**
+ * Check-in method implied by the event type: games, rehearsals and concerts
+ * use QR codes; any other type falls back to staff toggle buttons.
+ */
+function defaultCheckinMode(type: EventType): CheckinMode {
+  return type === "rehearsal" || type === "game" || type === "concert"
+    ? "qr"
+    : "toggle";
+}
+
+/**
  * Surface the real error message a Supabase Edge Function returns, instead of
  * the generic "Edge Function returned a non-2xx status code". The function's
  * JSON body (e.g. "Email reminders aren't configured yet…") lives in the
@@ -359,6 +369,7 @@ export default function CalendarScreen() {
         tomorrow.getDate()
       )}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`
     );
+    setCheckinMode(defaultCheckinMode(type));
     setShowAdd(true);
   }
 
@@ -586,7 +597,12 @@ export default function CalendarScreen() {
                 <button
                   type="button"
                   key={t}
-                  onClick={() => setType(t)}
+                  onClick={() => {
+                    setType(t);
+                    // Games, rehearsals & concerts check in by QR; other types
+                    // fall back to toggle buttons.
+                    setCheckinMode(defaultCheckinMode(t));
+                  }}
                   className={cn(
                     "min-h-10 rounded-xl text-xs font-semibold transition-colors",
                     type === t
@@ -601,7 +617,7 @@ export default function CalendarScreen() {
           </Field>
           <Field
             label="Check-in method"
-            hint="QR code: students scan to check in. Toggle: staff tap who's present."
+            hint="QR code (default for games, rehearsals & concerts): students scan to check in. Toggle: staff tap who's present."
           >
             <div className="grid grid-cols-2 gap-2">
               {(["qr", "toggle"] as CheckinMode[]).map((m) => (
