@@ -134,11 +134,13 @@ function PersonalEventCard({
 function EventCard({
   event,
   onEdit,
+  onDelete,
   onRemind,
   reminding,
 }: {
   event: EventRow;
   onEdit?: (event: EventRow) => void;
+  onDelete?: (event: EventRow) => void;
   onRemind?: (event: EventRow) => void;
   reminding?: boolean;
 }) {
@@ -188,6 +190,16 @@ function EventCard({
           onClick={() => onEdit(event)}
         >
           <Pencil className="size-4" /> Edit
+        </Button>
+      )}
+      {onDelete && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2 w-full text-red-500 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+          onClick={() => onDelete(event)}
+        >
+          <Trash2 className="size-4" /> Delete
         </Button>
       )}
       {onRemind && (
@@ -248,6 +260,8 @@ export default function CalendarScreen() {
 
   // director: email reminders for absent members
   const [remindingId, setRemindingId] = useState<string | null>(null);
+  // general action errors (e.g. delete failures)
+  const [actionError, setActionError] = useState<string | null>(null);
   const [remindMsg, setRemindMsg] = useState<{
     tone: "success" | "error";
     text: string;
@@ -382,6 +396,24 @@ export default function CalendarScreen() {
     } finally {
       setRemindingId(null);
     }
+  }
+
+  /** Director-only (matches events_delete_director): remove a band event. */
+  async function deleteEvent(event: EventRow) {
+    const message = event.google_calendar_uid
+      ? `Delete “${event.name}”? It syncs from Google Calendar, so it will come back on the next sync — remove it in Google Calendar if you want it gone permanently.`
+      : `Delete “${event.name}” from the calendar? This can't be undone.`;
+    if (!window.confirm(message)) return;
+    setActionError(null);
+    const { error } = await supabase
+      .from("events")
+      .delete()
+      .eq("id", event.id);
+    if (error) {
+      setActionError(error.message);
+      return;
+    }
+    void loadEvents();
   }
 
   function openAdd() {
@@ -598,6 +630,11 @@ export default function CalendarScreen() {
                 {remindMsg.text}
               </Alert>
             )}
+            {actionError && (
+              <Alert tone="error" className="mb-3">
+                {actionError}
+              </Alert>
+            )}
             <div className="space-y-2">
               {dayPersonal.map((ev) => (
                 <PersonalEventCard
@@ -612,6 +649,7 @@ export default function CalendarScreen() {
                   key={ev.id}
                   event={ev}
                   onEdit={canAdd ? (e) => openEdit(e) : undefined}
+                  onDelete={isDirector ? (e) => void deleteEvent(e) : undefined}
                   onRemind={isDirector ? remind : undefined}
                   reminding={remindingId === ev.id}
                 />
