@@ -9,6 +9,7 @@ import {
   MailCheck,
   MapPin,
   Music,
+  Pencil,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -132,10 +133,12 @@ function PersonalEventCard({
 
 function EventCard({
   event,
+  onEdit,
   onRemind,
   reminding,
 }: {
   event: EventRow;
+  onEdit?: (event: EventRow) => void;
   onRemind?: (event: EventRow) => void;
   reminding?: boolean;
 }) {
@@ -177,6 +180,16 @@ function EventCard({
       >
         <CalendarPlus className="size-4" /> Add to Google Calendar
       </a>
+      {onEdit && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2 w-full"
+          onClick={() => onEdit(event)}
+        >
+          <Pencil className="size-4" /> Edit
+        </Button>
+      )}
       {onRemind && (
         <Button
           size="sm"
@@ -209,9 +222,11 @@ export default function CalendarScreen() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [personalEvents, setPersonalEvents] = useState<PersonalEventRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
+  const [showEventForm, setShowEventForm] = useState(false);
+  // null = adding a new event; set = editing this band event.
+  const [editingEvent, setEditingEvent] = useState<EventRow | null>(null);
 
-  // add-event form (band events)
+  // add/edit-event form (band events)
   const [name, setName] = useState("");
   const [type, setType] = useState<EventType>("rehearsal");
   const [checkinMode, setCheckinMode] = useState<CheckinMode>("qr");
@@ -310,20 +325,28 @@ export default function CalendarScreen() {
       return;
     }
     setSaving(true);
-    const { error } = await supabase.from("events").insert({
+    const payload = {
       name: name.trim(),
       type,
       checkin_mode: checkinMode,
       date: new Date(date).toISOString(),
       location: location.trim(),
-      created_by: profile.id,
-    });
+    };
+    const { error } = editingEvent
+      ? await supabase
+          .from("events")
+          .update(payload)
+          .eq("id", editingEvent.id)
+      : await supabase
+          .from("events")
+          .insert({ ...payload, created_by: profile.id });
     setSaving(false);
     if (error) {
       setFormError(error.message);
       return;
     }
-    setShowAdd(false);
+    setShowEventForm(false);
+    setEditingEvent(null);
     setName("");
     setType("rehearsal");
     setCheckinMode("qr");
@@ -370,7 +393,27 @@ export default function CalendarScreen() {
       )}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`
     );
     setCheckinMode(defaultCheckinMode(type));
-    setShowAdd(true);
+    setFormError(null);
+    setEditingEvent(null);
+    setShowEventForm(true);
+  }
+
+  /** Staff (director/secretary): populate the form from an existing event. */
+  function openEdit(event: EventRow) {
+    const d = new Date(event.date);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    setName(event.name);
+    setType(event.type);
+    setCheckinMode(event.checkin_mode);
+    setDate(
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+        d.getHours()
+      )}:${pad(d.getMinutes())}`
+    );
+    setLocation(event.location);
+    setFormError(null);
+    setEditingEvent(event);
+    setShowEventForm(true);
   }
 
   function openAddPersonal() {
@@ -568,6 +611,7 @@ export default function CalendarScreen() {
                 <EventCard
                   key={ev.id}
                   event={ev}
+                  onEdit={canAdd ? (e) => openEdit(e) : undefined}
                   onRemind={isDirector ? remind : undefined}
                   reminding={remindingId === ev.id}
                 />
@@ -577,13 +621,23 @@ export default function CalendarScreen() {
         )}
       </div>
 
-      {/* add event modal */}
+      {/* add / edit event modal */}
       <Modal
-        open={showAdd}
-        onClose={() => setShowAdd(false)}
-        title="Add event"
+        open={showEventForm}
+        onClose={() => {
+          setShowEventForm(false);
+          setEditingEvent(null);
+        }}
+        title={editingEvent ? "Edit event" : "Add event"}
       >
         <form onSubmit={submitEvent} className="space-y-4">
+          {editingEvent?.google_calendar_uid && (
+            <Alert tone="error">
+              This event syncs from Google Calendar — name, type, date and
+              location changes will be overwritten by the next sync. Check-in
+              method changes stick.
+            </Alert>
+          )}
           <Field label="Event name">
             <Input
               value={name}
@@ -655,7 +709,7 @@ export default function CalendarScreen() {
           </Field>
           {formError && <Alert tone="error">{formError}</Alert>}
           <Button type="submit" size="lg" loading={saving} className="w-full">
-            Save event
+            {editingEvent ? "Save changes" : "Save event"}
           </Button>
         </form>
       </Modal>
