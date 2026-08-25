@@ -2,6 +2,9 @@ export type Role = "student" | "section_leader" | "secretary" | "director";
 
 export type EventType = "rehearsal" | "game" | "concert";
 
+/** How attendance is collected for an event: QR scan or staff toggle buttons. */
+export type CheckinMode = "qr" | "toggle";
+
 export interface Profile {
   id: string;
   full_name: string;
@@ -28,6 +31,7 @@ export interface EventRow {
   google_calendar_uid: string | null;
   google_calendar_updated_at: string | null;
   google_calendar_synced_at: string | null;
+  checkin_mode: CheckinMode;
   created_by: string;
   created_at: string;
 }
@@ -54,13 +58,7 @@ export interface PersonalEventRow {
   owner_id: string;
   name: string;
   date: string;
-  end_date: string | null;
-  all_day: boolean;
   location: string;
-  description: string;
-  google_calendar_uid: string | null;
-  google_calendar_updated_at: string | null;
-  google_calendar_synced_at: string | null;
   created_at: string;
 }
 

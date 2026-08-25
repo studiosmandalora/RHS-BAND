@@ -16,6 +16,7 @@ import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import type {
+  CheckinMode,
   EventRow,
   EventType,
   PersonalEventRow,
@@ -183,8 +184,11 @@ function EventCard({
 
 export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
-  // Band events come from Google Calendar; everyone can still add personal ones.
-  const canAdd = false;
+  // Only secretaries and directors can manually add one-off band events —
+  // everything else syncs from Google Calendar. Matches the
+  // events_insert_staff RLS policy.
+  const canAdd =
+    profile.roles.includes("director") || profile.roles.includes("secretary");
   const isDirector = profile.roles.includes("director");
 
   const now = new Date();
@@ -200,6 +204,7 @@ export default function CalendarScreen() {
   // add-event form (band events)
   const [name, setName] = useState("");
   const [type, setType] = useState<EventType>("rehearsal");
+  const [checkinMode, setCheckinMode] = useState<CheckinMode>("qr");
   const [date, setDate] = useState("");
   const [location, setLocation] = useState("");
   const [saving, setSaving] = useState(false);
@@ -298,6 +303,7 @@ export default function CalendarScreen() {
     const { error } = await supabase.from("events").insert({
       name: name.trim(),
       type,
+      checkin_mode: checkinMode,
       date: new Date(date).toISOString(),
       location: location.trim(),
       created_by: profile.id,
@@ -310,6 +316,7 @@ export default function CalendarScreen() {
     setShowAdd(false);
     setName("");
     setType("rehearsal");
+    setCheckinMode("qr");
     setDate("");
     setLocation("");
     void loadEvents();
@@ -588,6 +595,30 @@ export default function CalendarScreen() {
                   )}
                 >
                   {EVENT_TYPE_LABEL[t]}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field
+            label="Check-in method"
+            hint="QR code: students scan to check in. Toggle: staff tap who's present."
+          >
+            <div className="grid grid-cols-2 gap-2">
+              {(["qr", "toggle"] as CheckinMode[]).map((m) => (
+                <button
+                  type="button"
+                  key={m}
+                  onClick={() => setCheckinMode(m)}
+                  className={cn(
+                    "min-h-10 rounded-xl text-xs font-semibold transition-colors",
+                    checkinMode === m
+                      ? m === "qr"
+                        ? "bg-forest text-white dark:bg-mid"
+                        : "bg-gold text-ink dark:bg-gold/80"
+                      : "bg-cream text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                  )}
+                >
+                  {m === "qr" ? "QR code" : "Toggle buttons"}
                 </button>
               ))}
             </div>

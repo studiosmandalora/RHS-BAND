@@ -38,8 +38,9 @@ supabase.functions.invoke("send_signup_reminder", { body: { event_id } });
 ## sync_google_calendar
 
 Imports the public RHS Band Google Calendar ICS feed into `public.events`.
-Google Calendar is the source of truth for band events: the first sync removes
-old in-app events, then future syncs update by Google event UID.
+Google Calendar is the source of truth for band events: events are upserted
+by Google event UID and events removed from the feed are deleted. Events that
+were added manually in the app (no Google UID) are preserved.
 
 ### Deploy
 

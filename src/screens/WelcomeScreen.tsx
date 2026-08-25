@@ -13,13 +13,6 @@ export default function WelcomeScreen() {
   const location = useLocation();
   const { session } = useAuth();
 
-  // Already signed in? Skip the auth screen.
-  if (session) {
-    return <Navigate to="/" replace />;
-  }
-  const from =
-    (location.state as { from?: string } | null)?.from ?? "/";
-
   const [mode, setMode] = useState<Mode>("signin");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -40,6 +33,16 @@ export default function WelcomeScreen() {
   // include them.
   const showDemoAccounts =
     import.meta.env.VITE_SHOW_DEMO_ACCOUNTS === "true";
+
+  // Already signed in? Skip the auth screen. Checked after every hook
+  // declaration so the hook count stays stable across renders (Rules of
+  // Hooks) — otherwise a session appearing right after sign-in/sign-up would
+  // make React throw on the next render.
+  if (session) {
+    return <Navigate to="/" replace />;
+  }
+  const from =
+    (location.state as { from?: string } | null)?.from ?? "/";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();

@@ -10,7 +10,7 @@
 
 /// <reference path="../deno-types.d.ts" />
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 function requiredEnv(name: string): string {
   const value = Deno.env.get(name);
@@ -233,9 +233,13 @@ Deno.serve(async (req) => {
     }
 
     const events = parseEvents(await icsRes.text());
+    // p_replace_all = false: Google events are upserted by UID and events
+    // removed from the feed are deleted, but manually-added band events
+    // (google_calendar_uid IS NULL) are preserved. Only the one-off migration
+    // sync would pass true.
     const { data, error } = await supabase.rpc("sync_google_calendar_events", {
       p_events: events,
-      p_replace_all: true,
+      p_replace_all: false,
     });
     if (error) throw error;
     if (isSyncResult(data) && !data.ok) {

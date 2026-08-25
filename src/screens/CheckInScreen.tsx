@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   Clock,
   Keyboard,
+  ListChecks,
   MapPin,
   Music,
   QrCode,
@@ -22,11 +23,17 @@ import {
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import {
+  overrideAttendance,
   recordAttendance,
   recordAttendanceByCode,
   startCheckinSession,
 } from "../lib/rpc";
-import type { AttendanceRow, EventRow, Profile } from "../lib/types";
+import type {
+  AttendanceRow,
+  CheckinMode,
+  EventRow,
+  Profile,
+} from "../lib/types";
 import { fmtTime, parseTokenFromString, startOfDay } from "../lib/date";
 import { EVENT_TYPE_CHIP, EVENT_TYPE_LABEL } from "../lib/constants";
 import { Alert, Badge, Button, Card, Modal, cn } from "../components/ui";
@@ -55,6 +62,9 @@ export default function CheckInScreen() {
     profile.roles.includes("director") ||
     profile.roles.includes("secretary") ||
     profile.roles.includes("section_leader");
+  // Only directors and secretaries can change an event's check-in method.
+  const isCheckinManager =
+    profile.roles.includes("director") || profile.roles.includes("secretary");
 
   const [upcomingEvents, setUpcomingEvents] = useState<EventRow[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<EventRow | null>(null);
@@ -63,7 +73,7 @@ export default function CheckInScreen() {
   // staff: QR generation
   const [session, setSession] = useState<ActiveSession | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [qrError, setQrError] = useState<string | null>(null);
+  const [staffError, setStaffError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(Date.now());
   const [liveCheckins, setLiveCheckins] = useState<AttendanceRow[]>([]);
   const [roster, setRoster] = useState<Record<string, Profile>>({});
@@ -143,7 +153,7 @@ export default function CheckInScreen() {
   /** Switch which event this screen is running check-in for. */
   function selectEvent(ev: EventRow) {
     setSelectedEvent(ev);
-    setQrError(null);
+    setStaffError(null);
     // A QR code belongs to one event — drop it when switching so a code is
     // never shown against the wrong event's header.
     setSession((s) => (s && s.event_id !== ev.id ? null : s));
@@ -173,16 +183,28 @@ export default function CheckInScreen() {
       .on(
         "postgres_changes",
         {
-          event: "INSERT",
+          event: "*",
           schema: "public",
           table: "attendance_records",
           filter: `event_id=eq.${selectedEvent.id}`,
         },
         (payload) => {
-          setLiveCheckins((prev) => [
-            ...prev.filter((r) => r.student_id !== (payload.new as AttendanceRow).student_id),
-            payload.new as AttendanceRow,
-          ]);
+          if (payload.eventType === "INSERT") {
+            setLiveCheckins((prev) => [
+              ...prev.filter((r) => r.student_id !== (payload.new as AttendanceRow).student_id),
+              payload.new as AttendanceRow,
+            ]);
+          } else if (payload.eventType === "UPDATE") {
+            const updated = payload.new as AttendanceRow;
+            setLiveCheckins((prev) =>
+              prev.some((r) => r.id === updated.id)
+                ? prev.map((r) => (r.id === updated.id ? updated : r))
+                : [...prev, updated]
+            );
+          } else if (payload.eventType === "DELETE") {
+            const old = payload.old as AttendanceRow;
+            setLiveCheckins((prev) => prev.filter((r) => r.id !== old.id));
+          }
         }
       )
       .subscribe();
@@ -233,11 +255,11 @@ export default function CheckInScreen() {
   async function generate() {
     if (!selectedEvent) return;
     setGenerating(true);
-    setQrError(null);
+    setStaffError(null);
     const { result, error } = await startCheckinSession(selectedEvent.id);
     setGenerating(false);
     if (error || !result?.ok) {
-      setQrError(error?.message ?? result?.message ?? "Could not generate a code.");
+      setStaffError(error?.message ?? result?.message ?? "Could not generate a code.");
       return;
     }
     setNowMs(Date.now());
@@ -247,6 +269,58 @@ export default function CheckInScreen() {
       expires_at: result.expires_at!,
       event_id: selectedEvent.id,
     });
+  }
+
+  /** Director/secretary: switch how this event collects attendance. */
+  async function setCheckinMode(mode: CheckinMode) {
+    if (!selectedEvent || selectedEvent.checkin_mode === mode) return;
+    // A QR session belongs to QR mode — drop it when switching to toggle.
+    if (mode === "toggle") setSession(null);
+    setSelectedEvent({ ...selectedEvent, checkin_mode: mode });
+    setStaffError(null);
+    const { error } = await supabase
+      .from("events")
+      .update({ checkin_mode: mode })
+      .eq("id", selectedEvent.id);
+    if (error) setStaffError(error.message);
+  }
+
+  /** Toggle mode: staff mark a member present/absent on the spot. */
+  async function toggleAttendance(memberId: string, currentlyAttended: boolean) {
+    if (!selectedEvent) return;
+    const next = !currentlyAttended;
+    setStaffError(null);
+    // optimistic update
+    setLiveCheckins((prev) =>
+      next
+        ? [
+            ...prev.filter((r) => r.student_id !== memberId),
+            {
+              id: `tmp-${memberId}`,
+              event_id: selectedEvent.id,
+              student_id: memberId,
+              attended: true,
+              checked_in_at: new Date().toISOString(),
+            } as AttendanceRow,
+          ]
+        : prev.filter((r) => r.student_id !== memberId)
+    );
+    const { result, error } = await overrideAttendance(
+      selectedEvent.id,
+      memberId,
+      next
+    );
+    if (error || !result?.ok) {
+      setStaffError(
+        error?.message ?? result?.message ?? "Could not update attendance."
+      );
+      // refetch authoritative state to undo the optimistic change
+      const { data } = await supabase
+        .from("attendance_records")
+        .select("*")
+        .eq("event_id", selectedEvent.id);
+      setLiveCheckins((data as AttendanceRow[]) ?? []);
+    }
   }
 
   const qrUrl = session
@@ -378,7 +452,13 @@ export default function CheckInScreen() {
       <div className="mb-4">
         <h1 className="text-xl font-black text-ink dark:text-zinc-100">Check-In</h1>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          {isStaff ? "Generate a code students scan to check in." : "Scan the code at the door."}
+          {isStaff
+            ? selectedEvent?.checkin_mode === "toggle"
+              ? "Tap who's present as they arrive."
+              : "Generate a code students scan to check in."
+            : selectedEvent?.checkin_mode === "toggle"
+              ? "Staff will mark you present."
+              : "Scan the code at the door."}
         </p>
       </div>
 
@@ -439,9 +519,99 @@ export default function CheckInScreen() {
               </Badge>
             </div>
 
-            {/* staff: generate / QR */}
+            {/* staff: check-in controls */}
             {isStaff && (
               <div className="border-t border-black/5 bg-cream p-4 dark:border-white/10 dark:bg-zinc-950/40">
+                {/* director/secretary: choose how attendance is collected */}
+                {isCheckinManager && (
+                  <div className="mb-3">
+                    <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-zinc-400">
+                      Check-in method
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void setCheckinMode("qr")}
+                        className={cn(
+                          "flex min-h-10 items-center justify-center gap-1.5 rounded-xl text-xs font-semibold transition-colors",
+                          selectedEvent.checkin_mode === "qr"
+                            ? "bg-forest text-white dark:bg-mid"
+                            : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                        )}
+                      >
+                        <QrCode className="size-4" /> QR code
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void setCheckinMode("toggle")}
+                        className={cn(
+                          "flex min-h-10 items-center justify-center gap-1.5 rounded-xl text-xs font-semibold transition-colors",
+                          selectedEvent.checkin_mode === "toggle"
+                            ? "bg-gold text-ink dark:bg-gold/80"
+                            : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                        )}
+                      >
+                        <ListChecks className="size-4" /> Toggle buttons
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {selectedEvent.checkin_mode === "toggle" ? (
+                  /* toggle mode: tap each member present/absent */
+                  <div>
+                    <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
+                      <Users className="size-3.5" /> Present · {checkedInIds.size} of{" "}
+                      {relevantMembers.length}
+                    </p>
+                    {relevantMembers.length === 0 ? (
+                      <p className="rounded-xl bg-white/60 px-3 py-2 text-xs text-zinc-400 dark:bg-zinc-800">
+                        No one to check in yet.
+                      </p>
+                    ) : (
+                      <div className="max-h-80 space-y-1 overflow-y-auto">
+                        {relevantMembers.map((p) => {
+                          const rec = liveCheckins.find(
+                            (r) => r.student_id === p.id
+                          );
+                          const done = Boolean(rec);
+                          return (
+                            <div
+                              key={p.id}
+                              className={
+                                "flex items-center gap-2 rounded-xl px-3 py-2 " +
+                                (done
+                                  ? "bg-moss/70 dark:bg-forest/40"
+                                  : "bg-white/60 dark:bg-zinc-800")
+                              }
+                            >
+                              <Avatar
+                                name={p.display_name || "?"}
+                                url={p.avatar_url}
+                                size="xs"
+                              />
+                              <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
+                                {p.display_name || p.full_name}
+                              </span>
+                              <button
+                                onClick={() => void toggleAttendance(p.id, done)}
+                                className={cn(
+                                  "min-h-8 rounded-lg px-3 text-xs font-bold transition-colors",
+                                  done
+                                    ? "bg-forest text-white dark:bg-mid"
+                                    : "bg-white text-forest ring-1 ring-forest/30 dark:bg-zinc-700 dark:text-moss dark:ring-forest/50"
+                                )}
+                              >
+                                {done ? "Present" : "Mark present"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 {!session ? (
                   <Button size="lg" className="w-full" onClick={generate} loading={generating}>
                     <QrCode className="size-5" /> Generate Code
@@ -495,7 +665,7 @@ export default function CheckInScreen() {
                     </Button>
                   </div>
                 )}
-                {qrError && <Alert tone="error" className="mt-3">{qrError}</Alert>}
+                {staffError && <Alert tone="error" className="mt-3">{staffError}</Alert>}
 
                 {/* live check-ins: who has & hasn't checked in yet */}
                 {session && !expired && (
@@ -545,6 +715,8 @@ export default function CheckInScreen() {
                     )}
                   </div>
                 )}
+                  </>
+                )}
               </div>
             )}
 
@@ -564,6 +736,16 @@ export default function CheckInScreen() {
                           : "Marked present"}
                       </p>
                     </div>
+                  </div>
+                ) : selectedEvent.checkin_mode === "toggle" ? (
+                  <div className="rounded-xl bg-white/60 px-4 py-3 text-center dark:bg-zinc-800">
+                    <ListChecks className="mx-auto mb-1 size-6 text-gold" />
+                    <p className="text-sm font-semibold text-ink dark:text-zinc-200">
+                      Staff will mark you present
+                    </p>
+                    <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                      This event uses toggle check-in — no code needed.
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-2">

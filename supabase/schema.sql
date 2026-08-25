@@ -148,6 +148,11 @@ create table if not exists public.events (
   google_calendar_uid text unique,
   google_calendar_updated_at timestamptz,
   google_calendar_synced_at timestamptz,
+  -- How attendance is collected for this event: 'qr' (students scan a code)
+  -- or 'toggle' (staff tap Present/absent buttons). Settable by directors and
+  -- secretaries per event.
+  checkin_mode text not null default 'qr'
+    check (checkin_mode in ('qr', 'toggle')),
   -- Informational only (the RLS insert policy just requires it to be the
   -- current user). Nullable so an event survives if its creator is later
   -- removed from the roster.
@@ -162,6 +167,12 @@ alter table public.events add column if not exists description text not null def
 alter table public.events add column if not exists google_calendar_uid text unique;
 alter table public.events add column if not exists google_calendar_updated_at timestamptz;
 alter table public.events add column if not exists google_calendar_synced_at timestamptz;
+
+-- Idempotent migration for databases created before per-event check-in modes.
+alter table public.events add column if not exists checkin_mode text not null default 'qr';
+alter table public.events drop constraint if exists events_checkin_mode_check;
+alter table public.events add constraint events_checkin_mode_check
+  check (checkin_mode in ('qr', 'toggle'));
 
 create index if not exists events_date_idx on public.events (date);
 create index if not exists events_google_calendar_uid_idx
@@ -253,6 +264,9 @@ alter table public.checkin_attempts enable row level security;
 -- ---------------------------------------------------------------------------
 -- 4c. Personal events — each member's own private calendar entries
 -- ---------------------------------------------------------------------------
+-- Everyone can add their own personal events (they're private to the owner);
+-- band events that everyone sees are secretary/director-only (see
+-- events_insert_staff below).
 create table if not exists public.personal_events (
   id         uuid primary key default gen_random_uuid(),
   owner_id   uuid not null references public.profiles (id) on delete cascade,
@@ -433,11 +447,14 @@ create policy "events_insert_staff"
     and created_by = auth.uid()
   );
 
+-- Directors AND secretaries may update events (e.g. change the check-in
+-- method). Deletion stays director-only.
 drop policy if exists "events_update_director" on public.events;
-create policy "events_update_director"
+drop policy if exists "events_update_staff" on public.events;
+create policy "events_update_staff"
   on public.events for update
   to authenticated
-  using (public.user_has_role('director'));
+  using (public.user_has_role('director') or public.user_has_role('secretary'));
 
 drop policy if exists "events_delete_director" on public.events;
 create policy "events_delete_director"
@@ -626,6 +643,11 @@ begin
   end if;
   if not exists (select 1 from public.events where id = p_event_id) then
     return jsonb_build_object('ok', false, 'message', 'That event no longer exists.');
+  end if;
+
+  -- Toggle-mode events don't use QR codes — staff mark attendance manually.
+  if (select checkin_mode from public.events where id = p_event_id) = 'toggle' then
+    return jsonb_build_object('ok', false, 'message', 'This event uses toggle check-in — mark attendance with the buttons on the Check-In screen.');
   end if;
 
   -- Never open check-in for an event that has already ended.
@@ -1441,7 +1463,10 @@ exception
 end;
 $$;
 
-revoke execute on function public.sync_google_calendar_events(jsonb, boolean) from anon, authenticated;
+-- NOTE: Postgres grants EXECUTE to PUBLIC by default on new functions, so a
+-- plain `revoke ... from anon, authenticated` does NOT actually lock the
+-- function down (anon still gets it via PUBLIC). Always revoke from PUBLIC.
+revoke execute on function public.sync_google_calendar_events(jsonb, boolean) from public;
 grant execute on function public.sync_google_calendar_events(jsonb, boolean) to service_role;
 
 -- Emails for the absent-member reminder Edge Function (send_signup_reminder).
@@ -1462,7 +1487,7 @@ as $$
   where coalesce(u.email, '') <> '';
 $$;
 
-revoke execute on function public.get_roster_emails() from anon, authenticated;
+revoke execute on function public.get_roster_emails() from public;
 grant execute on function public.get_roster_emails() to service_role;
 -- 9. Storage — avatar photos
 -- ---------------------------------------------------------------------------
