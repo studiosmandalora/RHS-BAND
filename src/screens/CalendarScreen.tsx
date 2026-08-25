@@ -709,10 +709,10 @@ export default function CalendarScreen() {
           </Field>
           <Field
             label="Check-in method"
-            hint="QR code (default for games, rehearsals & concerts): students scan to check in. Toggle: staff tap who's present."
+            hint="QR (default for games, rehearsals & concerts), toggle, both, or none (no attendance)."
           >
             <div className="grid grid-cols-2 gap-2">
-              {(["qr", "toggle"] as CheckinMode[]).map((m) => (
+              {(["qr", "toggle", "both", "none"] as CheckinMode[]).map((m) => (
                 <button
                   type="button"
                   key={m}
@@ -726,7 +726,13 @@ export default function CalendarScreen() {
                       : "bg-cream text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
                   )}
                 >
-                  {m === "qr" ? "QR code" : "Toggle buttons"}
+                  {m === "qr"
+                    ? "QR code"
+                    : m === "toggle"
+                      ? "Toggle"
+                      : m === "both"
+                        ? "Both"
+                        : "None"}
                 </button>
               ))}
             </div>

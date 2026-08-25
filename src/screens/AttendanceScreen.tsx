@@ -43,7 +43,11 @@ export default function AttendanceScreen() {
   const pastEvents = useMemo(
     () =>
       events
-        .filter((e) => new Date(e.date) < endOfDay(new Date()))
+        .filter(
+          (e) =>
+            new Date(e.date) < endOfDay(new Date()) &&
+            e.checkin_mode !== "none"
+        )
         .sort((a, b) => +new Date(b.date) - +new Date(a.date)),
     [events]
   );

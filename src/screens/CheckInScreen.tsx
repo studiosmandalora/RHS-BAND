@@ -7,11 +7,13 @@ import {
 import type { Html5Qrcode } from "html5-qrcode";
 import { QRCodeSVG } from "qrcode.react";
 import {
+  Ban,
   Camera,
   CameraOff,
   CheckCircle2,
   Clock,
   Keyboard,
+  Layers,
   ListChecks,
   MapPin,
   Music,
@@ -455,10 +457,16 @@ export default function CheckInScreen() {
           {isStaff
             ? selectedEvent?.checkin_mode === "toggle"
               ? "Tap who's present as they arrive."
-              : "Generate a code students scan to check in."
+              : selectedEvent?.checkin_mode === "both"
+                ? "Generate a code and tap who's present as they arrive."
+                : selectedEvent?.checkin_mode === "none"
+                  ? "No check-in for this event."
+                  : "Generate a code students scan to check in."
             : selectedEvent?.checkin_mode === "toggle"
               ? "Staff will mark you present."
-              : "Scan the code at the door."}
+              : selectedEvent?.checkin_mode === "none"
+                ? "No check-in for this event."
+                : "Scan the code at the door."}
         </p>
       </div>
 
@@ -528,90 +536,84 @@ export default function CheckInScreen() {
                     <p className="mb-1.5 text-[11px] font-bold uppercase tracking-wide text-zinc-400">
                       Check-in method
                     </p>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-4 gap-1.5">
                       <button
                         type="button"
                         onClick={() => void setCheckinMode("qr")}
                         className={cn(
-                          "flex min-h-10 items-center justify-center gap-1.5 rounded-xl text-xs font-semibold transition-colors",
+                          "flex min-h-10 items-center justify-center gap-1 rounded-xl text-[11px] font-semibold transition-colors",
                           selectedEvent.checkin_mode === "qr"
                             ? "bg-forest text-white dark:bg-mid"
                             : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
                         )}
                       >
-                        <QrCode className="size-4" /> QR code
+                        <QrCode className="size-4" /> QR
                       </button>
                       <button
                         type="button"
                         onClick={() => void setCheckinMode("toggle")}
                         className={cn(
-                          "flex min-h-10 items-center justify-center gap-1.5 rounded-xl text-xs font-semibold transition-colors",
+                          "flex min-h-10 items-center justify-center gap-1 rounded-xl text-[11px] font-semibold transition-colors",
                           selectedEvent.checkin_mode === "toggle"
                             ? "bg-gold text-ink dark:bg-gold/80"
                             : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
                         )}
                       >
-                        <ListChecks className="size-4" /> Toggle buttons
+                        <ListChecks className="size-4" /> Toggle
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void setCheckinMode("both")}
+                        className={cn(
+                          "flex min-h-10 items-center justify-center gap-1 rounded-xl text-[11px] font-semibold transition-colors",
+                          selectedEvent.checkin_mode === "both"
+                            ? "bg-gold text-ink dark:bg-gold/80"
+                            : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                        )}
+                      >
+                        <Layers className="size-4" /> Both
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void setCheckinMode("none")}
+                        className={cn(
+                          "flex min-h-10 items-center justify-center gap-1 rounded-xl text-[11px] font-semibold transition-colors",
+                          selectedEvent.checkin_mode === "none"
+                            ? "bg-gold text-ink dark:bg-gold/80"
+                            : "bg-white text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
+                        )}
+                      >
+                        <Ban className="size-4" /> None
                       </button>
                     </div>
                   </div>
                 )}
 
-                {selectedEvent.checkin_mode === "toggle" ? (
-                  /* toggle mode: tap each member present/absent */
-                  <div>
-                    <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
-                      <Users className="size-3.5" /> Present · {checkedInIds.size} of{" "}
-                      {relevantMembers.length}
+                {staffError && (
+                  <Alert tone="error" className="mb-3">
+                    {staffError}
+                  </Alert>
+                )}
+
+                {selectedEvent.checkin_mode === "none" ? (
+                  <div className="rounded-xl bg-white/60 px-4 py-3 text-center dark:bg-zinc-800">
+                    <Ban className="mx-auto mb-1 size-6 text-zinc-400" />
+                    <p className="text-sm font-semibold text-ink dark:text-zinc-200">
+                      No check-in for this event
                     </p>
-                    {relevantMembers.length === 0 ? (
-                      <p className="rounded-xl bg-white/60 px-3 py-2 text-xs text-zinc-400 dark:bg-zinc-800">
-                        No one to check in yet.
-                      </p>
-                    ) : (
-                      <div className="max-h-80 space-y-1 overflow-y-auto">
-                        {relevantMembers.map((p) => {
-                          const rec = liveCheckins.find(
-                            (r) => r.student_id === p.id
-                          );
-                          const done = Boolean(rec);
-                          return (
-                            <div
-                              key={p.id}
-                              className={
-                                "flex items-center gap-2 rounded-xl px-3 py-2 " +
-                                (done
-                                  ? "bg-moss/70 dark:bg-forest/40"
-                                  : "bg-white/60 dark:bg-zinc-800")
-                              }
-                            >
-                              <Avatar
-                                name={p.display_name || "?"}
-                                url={p.avatar_url}
-                                size="xs"
-                              />
-                              <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
-                                {p.display_name || p.full_name}
-                              </span>
-                              <button
-                                onClick={() => void toggleAttendance(p.id, done)}
-                                className={cn(
-                                  "min-h-8 rounded-lg px-3 text-xs font-bold transition-colors",
-                                  done
-                                    ? "bg-forest text-white dark:bg-mid"
-                                    : "bg-white text-forest ring-1 ring-forest/30 dark:bg-zinc-700 dark:text-moss dark:ring-forest/50"
-                                )}
-                              >
-                                {done ? "Present" : "Mark present"}
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                    <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                      Attendance isn't being collected for this event.
+                    </p>
                   </div>
                 ) : (
                   <>
+                {/* QR portion — available for 'qr' and 'both' */}
+                {selectedEvent.checkin_mode !== "toggle" && (
+                  <div
+                    className={
+                      selectedEvent.checkin_mode === "both" ? "mb-4" : ""
+                    }
+                  >
                 {!session ? (
                   <Button size="lg" className="w-full" onClick={generate} loading={generating}>
                     <QrCode className="size-5" /> Generate Code
@@ -665,20 +667,71 @@ export default function CheckInScreen() {
                     </Button>
                   </div>
                 )}
-                {staffError && <Alert tone="error" className="mt-3">{staffError}</Alert>}
+                  </div>
+                )}
 
-                {/* live check-ins: who has & hasn't checked in yet */}
-                {session && !expired && (
-                  <div className="mt-4">
+                {/* live view: interactive roster (toggle/both) or read-only list (qr) */}
+                {selectedEvent.checkin_mode === "qr" ? (
+                  session && !expired && (
+                    <div className="mt-4">
+                      <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
+                        <Users className="size-3.5" /> Checked in · {checkedInIds.size} of {relevantMembers.length}
+                      </p>
+                      {relevantMembers.length === 0 ? (
+                        <p className="rounded-xl bg-white/60 px-3 py-2 text-xs text-zinc-400 dark:bg-zinc-800">
+                          No one to check in yet.
+                        </p>
+                      ) : (
+                        <div className="max-h-52 space-y-1 overflow-y-auto">
+                          {relevantMembers.map((p) => {
+                            const rec = liveCheckins.find(
+                              (r) => r.student_id === p.id
+                            );
+                            const done = Boolean(rec);
+                            return (
+                              <div
+                                key={p.id}
+                                className={
+                                  "flex items-center gap-2 rounded-xl px-3 py-1.5 " +
+                                  (done
+                                    ? "bg-moss/70 dark:bg-forest/40"
+                                    : "bg-white/60 dark:bg-zinc-800")
+                                }
+                              >
+                                <Avatar name={p.display_name || "?"} url={p.avatar_url} size="xs" />
+                                <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
+                                  {p.display_name || p.full_name}
+                                </span>
+                                {done ? (
+                                  <span className="flex items-center gap-1 text-[11px] font-bold text-forest dark:text-moss">
+                                    <CheckCircle2 className="size-3.5" />
+                                    {rec?.checked_in_at ? fmtTime(rec.checked_in_at) : "In"}
+                                  </span>
+                                ) : (
+                                  <span className="text-[11px] font-semibold text-zinc-400">
+                                    Not yet
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
+                ) : (
+                  /* toggle / both: staff tap each member present/absent */
+                  <div>
                     <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
-                      <Users className="size-3.5" /> Checked in · {checkedInIds.size} of {relevantMembers.length}
+                      <Users className="size-3.5" /> Present · {checkedInIds.size} of{" "}
+                      {relevantMembers.length}
                     </p>
                     {relevantMembers.length === 0 ? (
                       <p className="rounded-xl bg-white/60 px-3 py-2 text-xs text-zinc-400 dark:bg-zinc-800">
                         No one to check in yet.
                       </p>
                     ) : (
-                      <div className="max-h-52 space-y-1 overflow-y-auto">
+                      <div className="max-h-80 space-y-1 overflow-y-auto">
                         {relevantMembers.map((p) => {
                           const rec = liveCheckins.find(
                             (r) => r.student_id === p.id
@@ -688,26 +741,31 @@ export default function CheckInScreen() {
                             <div
                               key={p.id}
                               className={
-                                "flex items-center gap-2 rounded-xl px-3 py-1.5 " +
+                                "flex items-center gap-2 rounded-xl px-3 py-2 " +
                                 (done
                                   ? "bg-moss/70 dark:bg-forest/40"
                                   : "bg-white/60 dark:bg-zinc-800")
                               }
                             >
-                              <Avatar name={p.display_name || "?"} url={p.avatar_url} size="xs" />
+                              <Avatar
+                                name={p.display_name || "?"}
+                                url={p.avatar_url}
+                                size="xs"
+                              />
                               <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
                                 {p.display_name || p.full_name}
                               </span>
-                              {done ? (
-                                <span className="flex items-center gap-1 text-[11px] font-bold text-forest dark:text-moss">
-                                  <CheckCircle2 className="size-3.5" />
-                                  {rec?.checked_in_at ? fmtTime(rec.checked_in_at) : "In"}
-                                </span>
-                              ) : (
-                                <span className="text-[11px] font-semibold text-zinc-400">
-                                  Not yet
-                                </span>
-                              )}
+                              <button
+                                onClick={() => void toggleAttendance(p.id, done)}
+                                className={cn(
+                                  "min-h-8 rounded-lg px-3 text-xs font-bold transition-colors",
+                                  done
+                                    ? "bg-forest text-white dark:bg-mid"
+                                    : "bg-white text-forest ring-1 ring-forest/30 dark:bg-zinc-700 dark:text-moss dark:ring-forest/50"
+                                )}
+                              >
+                                {done ? "Present" : "Mark present"}
+                              </button>
                             </div>
                           );
                         })}
@@ -745,6 +803,16 @@ export default function CheckInScreen() {
                     </p>
                     <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
                       This event uses toggle check-in — no code needed.
+                    </p>
+                  </div>
+                ) : selectedEvent.checkin_mode === "none" ? (
+                  <div className="rounded-xl bg-white/60 px-4 py-3 text-center dark:bg-zinc-800">
+                    <Ban className="mx-auto mb-1 size-6 text-zinc-400" />
+                    <p className="text-sm font-semibold text-ink dark:text-zinc-200">
+                      No check-in for this event
+                    </p>
+                    <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                      This event doesn't collect attendance.
                     </p>
                   </div>
                 ) : (

@@ -2,8 +2,8 @@ export type Role = "student" | "section_leader" | "secretary" | "director";
 
 export type EventType = "rehearsal" | "game" | "concert";
 
-/** How attendance is collected for an event: QR scan or staff toggle buttons. */
-export type CheckinMode = "qr" | "toggle";
+/** How attendance is collected for an event: QR scan, staff toggle buttons, both, or none. */
+export type CheckinMode = "qr" | "toggle" | "both" | "none";
 
 export interface Profile {
   id: string;

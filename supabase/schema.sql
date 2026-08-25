@@ -148,11 +148,11 @@ create table if not exists public.events (
   google_calendar_uid text unique,
   google_calendar_updated_at timestamptz,
   google_calendar_synced_at timestamptz,
-  -- How attendance is collected for this event: 'qr' (students scan a code)
-  -- or 'toggle' (staff tap Present/absent buttons). Settable by directors and
-  -- secretaries per event.
+  -- How attendance is collected for this event: 'qr' (students scan a code),
+  -- 'toggle' (staff tap Present/absent buttons), 'both', or 'none' (no
+  -- attendance is collected). Settable by directors and secretaries.
   checkin_mode text not null default 'qr'
-    check (checkin_mode in ('qr', 'toggle')),
+    check (checkin_mode in ('qr', 'toggle', 'both', 'none')),
   -- Informational only (the RLS insert policy just requires it to be the
   -- current user). Nullable so an event survives if its creator is later
   -- removed from the roster.
@@ -172,7 +172,7 @@ alter table public.events add column if not exists google_calendar_synced_at tim
 alter table public.events add column if not exists checkin_mode text not null default 'qr';
 alter table public.events drop constraint if exists events_checkin_mode_check;
 alter table public.events add constraint events_checkin_mode_check
-  check (checkin_mode in ('qr', 'toggle'));
+  check (checkin_mode in ('qr', 'toggle', 'both', 'none'));
 
 create index if not exists events_date_idx on public.events (date);
 create index if not exists events_google_calendar_uid_idx
@@ -648,6 +648,11 @@ begin
   -- Toggle-mode events don't use QR codes — staff mark attendance manually.
   if (select checkin_mode from public.events where id = p_event_id) = 'toggle' then
     return jsonb_build_object('ok', false, 'message', 'This event uses toggle check-in — mark attendance with the buttons on the Check-In screen.');
+  end if;
+
+  -- 'none' events don't collect attendance at all.
+  if (select checkin_mode from public.events where id = p_event_id) = 'none' then
+    return jsonb_build_object('ok', false, 'message', 'This event doesn''t collect attendance.');
   end if;
 
   -- Never open check-in for an event that has already ended.
