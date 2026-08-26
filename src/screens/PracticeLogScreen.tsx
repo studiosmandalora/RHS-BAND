@@ -40,7 +40,6 @@ export default function PracticeLogScreen() {
   const [category, setCategory] = useState("");
 
   const isDirector = profile.roles.includes("director");
-  const isStaff = profile.roles.includes("director") || profile.roles.includes("section_leader");
 
   // All profiles for director view
   const [profiles, setProfiles] = useState<Profile[]>([]);
