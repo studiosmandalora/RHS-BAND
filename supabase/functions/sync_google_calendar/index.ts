@@ -157,16 +157,30 @@ function parseIcsDate(line: { params: Record<string, string>; value: string }, d
 
 function inferType(summary: string): string {
   const s = summary.toLowerCase();
-  if (/concert|festival|performance|show|winterfest|ensemble/.test(s)) return "Concert";
-  if (/game|football|basketball|pep band|mustang band jam/.test(s)) return "Game";
-  if (/competition|contest|regionals|state/.test(s)) return "Competition";
-  if (/section meeting|sectionals/.test(s)) return "Section Meeting";
-  if (/band meeting|leadership/.test(s)) return "Band Meeting";
-  if (/parent|booster/.test(s)) return "Parent Meeting";
-  if (/fundrais|cookie|car wash/.test(s)) return "Fundraiser";
-  if (/trip|travel|bus/.test(s)) return "Trip";
-  if (/workshop|masterclass|clinic/.test(s)) return "Workshop";
+  // Concert / Festival
+  if (/concert|festival|winterfest|showcase|invitational/.test(s) && !/audition/.test(s)) return "Concert";
+  // Game
+  if (/game|football|basketball|exhibition|away @|home opener|home exhibition/.test(s)) return "Game";
+  // Competition
+  if (/competition|contest|regionals|state|solo.?&.?ensemble|all-state|wmea conference|concerto/.test(s)) return "Competition";
+  // Audition
   if (/audition/.test(s)) return "Audition";
+  // Performance
+  if (/performance|parade|gig|jam|extravaganza|market opening|starlight|frozen over performance/.test(s)) return "Performance";
+  // Band Meeting
+  if (/band meeting|leadership training/.test(s)) return "Band Meeting";
+  // Parent Meeting
+  if (/parent|booster/.test(s)) return "Parent Meeting";
+  // Workshop
+  if (/workshop|masterclass|clinic|guest artist/.test(s)) return "Workshop";
+  // Event/Activity
+  if (/camp|watch party|first day|no school|banquet|retreat|finals week|leap day|thanksgiving|spring break|midwinter|mlk day|veteran/.test(s)) return "Event/Activity";
+  // Fundraiser
+  if (/fundrais|cookie|car wash/.test(s)) return "Fundraiser";
+  // Trip
+  if (/trip|travel|bus/.test(s)) return "Trip";
+  // Section Meeting
+  if (/section meeting|sectionals/.test(s)) return "Section Meeting";
   return "Rehearsal";
 }
 
