@@ -84,13 +84,7 @@ export default function RosterScreen() {
       .from("profiles")
       .select("*")
       .order("display_name");
-    const rows = (data as Profile[]) ?? [];
-    // section leaders: their own section only
-    setMembers(
-      profile.roles.includes("section_leader")
-        ? rows.filter((m) => m.instrument === profile.instrument)
-        : rows
-    );
+    setMembers((data as Profile[]) ?? []);
   }
 
   useEffect(() => {
@@ -324,15 +318,16 @@ export default function RosterScreen() {
         <div className="space-y-2">
           {members.map((m) => {
             // Directors can manage everyone except other directors. Section
-            // leaders can only change the instrument of students in their own
-            // section (instrument matches theirs) — never roles, passwords,
-            // deactivation, or deletion.
+            // leaders can change the instrument of any student — never roles,
+            // passwords, deactivation, or deletion.
             const editable = isDirector && !m.roles.includes("director");
             const canEditInstrument =
               editable ||
               (isSectionLeader &&
                 m.roles.includes("student") &&
-                m.instrument === profile.instrument);
+                !m.roles.includes("director") &&
+                !m.roles.includes("section_leader") &&
+                m.id !== profile.id);
             return (
               <Card
                 key={m.id}
@@ -470,8 +465,8 @@ export default function RosterScreen() {
                         </div>
                         <p className="mt-1 text-[11px] text-zinc-400">
                           Everyone keeps at least one role. Directors manage
-                          roles, section leaders manage their section's
-                          instruments.
+                          roles, section leaders can change any student's
+                          instrument.
                         </p>
                       </Field>
                     )}

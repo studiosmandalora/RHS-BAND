@@ -21,6 +21,7 @@ import {
   Modal,
   Select,
 } from "../components/ui";
+import { Avatar } from "../components/Avatar";
 
 export default function PracticeLogScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
@@ -38,22 +39,47 @@ export default function PracticeLogScreen() {
   const [notes, setNotes] = useState("");
   const [category, setCategory] = useState("");
 
+  const isDirector = profile.roles.includes("director");
+  const isStaff = profile.roles.includes("director") || profile.roles.includes("section_leader");
+
+  // All profiles for director view
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+
   useEffect(() => {
     void loadLogs();
   }, [profile.id]);
 
   async function loadLogs() {
     setLoading(true);
-    const { data } = await supabase
+    let query = supabase
       .from("practice_logs")
       .select("*")
-      .eq("owner_id", profile.id)
       .order("date", { ascending: false });
+
+    // Directors see all practice logs; others see only their own
+    if (!isDirector) {
+      query = query.eq("owner_id", profile.id);
+    }
+
+    const { data } = await query;
     setLogs((data as PracticeLogRow[]) ?? []);
+
+    // Load profiles for director view
+    if (isDirector) {
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("*")
+        .order("display_name");
+      setProfiles((profileData as Profile[]) ?? []);
+    }
     setLoading(false);
   }
 
-  // Stats
+  // Stats (only for own logs)
+  const myLogs = useMemo(() => {
+    return logs.filter((l) => l.owner_id === profile.id);
+  }, [logs, profile.id]);
+
   const stats = useMemo(() => {
     const now = new Date();
     const weekStart = new Date(now);
@@ -61,16 +87,42 @@ export default function PracticeLogScreen() {
     weekStart.setHours(0, 0, 0, 0);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const thisWeek = logs.filter(
+    const thisWeek = myLogs.filter(
       (l) => new Date(l.date) >= weekStart
     ).reduce((sum, l) => sum + l.duration_minutes, 0);
-    const thisMonth = logs.filter(
+    const thisMonth = myLogs.filter(
       (l) => new Date(l.date) >= monthStart
     ).reduce((sum, l) => sum + l.duration_minutes, 0);
-    const totalSessions = logs.length;
+    const totalSessions = myLogs.length;
 
     return { thisWeek, thisMonth, totalSessions };
-  }, [logs]);
+  }, [myLogs]);
+
+  // Group logs by student for director view
+  const logsByStudent = useMemo(() => {
+    if (!isDirector) return [];
+    const map = new Map<string, PracticeLogRow[]>();
+    for (const log of logs) {
+      const existing = map.get(log.owner_id) ?? [];
+      existing.push(log);
+      map.set(log.owner_id, existing);
+    }
+    return Array.from(map.entries())
+      .map(([ownerId, studentLogs]) => {
+        const prof = profiles.find((p) => p.id === ownerId);
+        const totalMinutes = studentLogs.reduce((s, l) => s + l.duration_minutes, 0);
+        return {
+          ownerId,
+          name: prof?.display_name || prof?.full_name || "Unknown",
+          instrument: prof?.instrument || "",
+          avatarUrl: prof?.avatar_url || "",
+          logs: studentLogs,
+          totalMinutes,
+          totalSessions: studentLogs.length,
+        };
+      })
+      .sort((a, b) => b.totalMinutes - a.totalMinutes);
+  }, [logs, profiles, isDirector]);
 
   async function submitLog(e: React.FormEvent) {
     e.preventDefault();
@@ -127,7 +179,7 @@ export default function PracticeLogScreen() {
             Practice Log
           </h1>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            Track your practice sessions
+            {isDirector ? "View your students' practice logs" : "Track your practice sessions"}
           </p>
         </div>
         <Button size="sm" onClick={() => { resetForm(); setShowForm(true); }}>
@@ -135,7 +187,7 @@ export default function PracticeLogScreen() {
         </Button>
       </div>
 
-      {/* Stats cards */}
+      {/* Stats cards (own logs only) */}
       <div className="mb-4 grid grid-cols-3 gap-2">
         <Card className="p-3 text-center">
           <Timer className="mx-auto mb-1 size-5 text-gold" />
@@ -176,9 +228,67 @@ export default function PracticeLogScreen() {
         <EmptyState
           icon={<Timer className="size-6" />}
           title="No practice logged yet"
-          subtitle="Start logging your practice sessions to track your progress."
+          subtitle={isDirector ? "Your students haven't logged any practice yet." : "Start logging your practice sessions to track your progress."}
         />
+      ) : isDirector ? (
+        /* Director view: grouped by student */
+        <div className="space-y-4">
+          {logsByStudent.map((student) => (
+            <Card key={student.ownerId} className="p-4">
+              <div className="mb-3 flex items-center gap-3">
+                <Avatar name={student.name} url={student.avatarUrl} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-ink dark:text-zinc-100">
+                    {student.name}
+                  </p>
+                  <p className="text-[11px] text-zinc-400">
+                    {student.instrument || "No section"} · {student.totalSessions} session{student.totalSessions === 1 ? "" : "s"} · {formatMinutes(student.totalMinutes)} total
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                {student.logs.slice(0, 5).map((log) => (
+                  <div key={log.id} className="flex items-center gap-3 rounded-xl bg-cream/50 px-3 py-2 dark:bg-zinc-800/50">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-moss text-forest dark:bg-forest/40 dark:text-moss">
+                      <Timer className="size-4" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-bold text-ink dark:text-zinc-100">
+                          {formatMinutes(log.duration_minutes)}
+                        </p>
+                        {log.category && (
+                          <Badge className="bg-purple-50 text-purple-600 dark:bg-purple-950/60 dark:text-purple-300">
+                            {log.category}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-zinc-400">
+                        {new Date(log.date).toLocaleDateString("en-US", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </p>
+                      {log.notes && (
+                        <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400 line-clamp-1">
+                          {log.notes}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {student.logs.length > 5 && (
+                  <p className="text-center text-[11px] text-zinc-400">
+                    +{student.logs.length - 5} more session{student.logs.length - 5 === 1 ? "" : "s"}
+                  </p>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
       ) : (
+        /* Student/section leader view: own logs */
         <div className="space-y-2">
           {logs.map((log) => (
             <Card key={log.id} className="flex items-center gap-3 p-3.5">

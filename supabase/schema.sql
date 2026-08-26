@@ -1422,18 +1422,17 @@ begin
       return jsonb_build_object('ok', false, 'message', 'Directors cannot change another director''s instrument.');
     end if;
   elsif public.user_has_role('section_leader') then
-    -- Section leaders: the member must already be in their own section
-    -- (same instrument), and must not be themselves or another staff member.
+    -- Section leaders: the member must be a student (not another staff member)
+    -- and not themselves or another director.
     if not exists (
       select 1 from public.profiles s
       where s.id = p_member_id
+        and s.id <> v_uid
         and s.roles @> '{student}'::public.app_role[]
         and not (s.roles @> '{director}'::public.app_role[])
         and not (s.roles @> '{section_leader}'::public.app_role[])
-        and s.instrument <> ''
-        and s.instrument = (select instrument from public.profiles where id = v_uid)
     ) then
-      return jsonb_build_object('ok', false, 'message', 'You can only change instruments of students in your own section.');
+      return jsonb_build_object('ok', false, 'message', 'Section leaders can only change instruments of students.');
     end if;
   else
     return jsonb_build_object('ok', false, 'message', 'Only staff may change instruments.');
