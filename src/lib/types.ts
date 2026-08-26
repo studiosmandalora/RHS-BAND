@@ -86,17 +86,6 @@ export interface PersonalEventRow {
   created_at: string;
 }
 
-export interface PracticeLogRow {
-  id: string;
-  owner_id: string;
-  instrument: string;
-  date: string;
-  duration_minutes: number;
-  notes: string;
-  category: string;
-  created_at: string;
-}
-
 export type NotificationType = "new_event" | "checkin_open";
 
 export interface NotificationRow {

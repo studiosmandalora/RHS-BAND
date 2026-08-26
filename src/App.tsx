@@ -6,7 +6,6 @@ import AttendanceScreen from "./screens/AttendanceScreen";
 import CalendarScreen from "./screens/CalendarScreen";
 import CheckInScreen from "./screens/CheckInScreen";
 import NeedsSetup from "./screens/NeedsSetup";
-import PracticeLogScreen from "./screens/PracticeLogScreen";
 import ProfileScreen from "./screens/ProfileScreen";
 import RosterScreen from "./screens/RosterScreen";
 import UpdatePasswordScreen from "./screens/UpdatePasswordScreen";
@@ -26,7 +25,6 @@ export default function App() {
         <Route path="attendance" element={<AttendanceScreen />} />
         <Route path="roster" element={<RosterScreen />} />
         <Route path="analytics" element={<AnalyticsScreen />} />
-        <Route path="practice" element={<PracticeLogScreen />} />
         <Route path="profile" element={<ProfileScreen />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

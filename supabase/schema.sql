@@ -1705,39 +1705,7 @@ exception when others then null;
 end $$;
 
 -- ---------------------------------------------------------------------------
--- 11. Practice log table
--- ---------------------------------------------------------------------------
-create table if not exists public.practice_logs (
-  id          uuid primary key default gen_random_uuid(),
-  owner_id    uuid not null references public.profiles (id) on delete cascade,
-  instrument  text not null default '',
-  date        date not null default current_date,
-  duration_minutes int not null default 0 check (duration_minutes > 0 and duration_minutes <= 480),
-  notes       text not null default '',
-  category    text not null default '',
-  created_at  timestamptz not null default now()
-);
-
-create index if not exists practice_logs_owner_idx
-  on public.practice_logs (owner_id, date desc);
-
-alter table public.practice_logs enable row level security;
-
-drop policy if exists "practice_logs_own_all" on public.practice_logs;
-create policy "practice_logs_own_all"
-  on public.practice_logs for all
-  to authenticated
-  using (owner_id = auth.uid())
-  with check (owner_id = auth.uid());
-
-drop policy if exists "practice_logs_director_read" on public.practice_logs;
-create policy "practice_logs_director_read"
-  on public.practice_logs for select
-  to authenticated
-  using (public.user_has_role('director'));
-
--- ---------------------------------------------------------------------------
--- 12. Attendance reminders tracking (avoid duplicate sends)
+-- 11. Attendance reminders tracking (avoid duplicate sends)
 -- ---------------------------------------------------------------------------
 create table if not exists public.attendance_reminders (
   id          uuid primary key default gen_random_uuid(),
@@ -1908,10 +1876,3 @@ grant execute on function public.get_section_attendance_stats() to authenticated
 grant execute on function public.get_event_attendance_summary(uuid) to authenticated;
 grant execute on function public.get_attendance_trend(int) to authenticated;
 grant execute on function public.override_attendance(uuid, uuid, text, text, text) to authenticated;
-
--- Realtime for practice logs
-do $$
-begin
-  alter publication supabase_realtime add table public.practice_logs;
-exception when others then null;
-end $$;

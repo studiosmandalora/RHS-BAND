@@ -1,6 +1,6 @@
 -- ============================================================================
 -- RHS Band Attendance Manager — Migration 001
--- Event types, attendance upgrades, Google Calendar sync fix, practice log
+-- Event types, attendance upgrades, Google Calendar sync fix
 -- ============================================================================
 -- Run this in Supabase Dashboard → SQL Editor on an existing database.
 -- ============================================================================
@@ -195,43 +195,7 @@ WHERE attended = true AND status = 'absent';
 
 
 -- --------------------------------------------------------------------------
--- 4. Practice log table
--- --------------------------------------------------------------------------
-
-CREATE TABLE IF NOT EXISTS public.practice_logs (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id    uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  instrument  text NOT NULL DEFAULT '',
-  date        date NOT NULL DEFAULT CURRENT_DATE,
-  duration_minutes int NOT NULL DEFAULT 0 CHECK (duration_minutes > 0 AND duration_minutes <= 480),
-  notes       text NOT NULL DEFAULT '',
-  category    text NOT NULL DEFAULT '',
-  created_at  timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS practice_logs_owner_idx
-  ON public.practice_logs (owner_id, date DESC);
-
-ALTER TABLE public.practice_logs ENABLE ROW LEVEL SECURITY;
-
--- Members can read/write only their own practice logs
-DROP POLICY IF EXISTS "practice_logs_own_all" ON public.practice_logs;
-CREATE POLICY "practice_logs_own_all"
-  ON public.practice_logs FOR ALL
-  TO authenticated
-  USING (owner_id = auth.uid())
-  WITH CHECK (owner_id = auth.uid());
-
--- Directors can read all practice logs (for analytics)
-DROP POLICY IF EXISTS "practice_logs_director_read" ON public.practice_logs;
-CREATE POLICY "practice_logs_director_read"
-  ON public.practice_logs FOR SELECT
-  TO authenticated
-  USING (public.user_has_role('director'));
-
-
--- --------------------------------------------------------------------------
--- 5. Attendance reminders tracking (avoid duplicate sends)
+-- 4. Attendance reminders tracking (avoid duplicate sends)
 -- --------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS public.attendance_reminders (
@@ -738,9 +702,5 @@ GRANT EXECUTE ON FUNCTION public.override_attendance(uuid, uuid, boolean) TO aut
 -- --------------------------------------------------------------------------
 -- 15. Enable realtime on new tables
 -- --------------------------------------------------------------------------
-
-DO $$ BEGIN
-  ALTER PUBLICATION supabase_realtime ADD TABLE public.practice_logs;
-EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
 -- Done!

@@ -107,18 +107,6 @@ export const EXCUSE_REASONS = [
   "Other",
 ] as const;
 
-/** Practice categories. */
-export const PRACTICE_CATEGORIES = [
-  "Scales & warm-ups",
-  "Concert music",
-  "Solo preparation",
-  "Sight reading",
-  "Etudes",
-  "Section music",
-  "Improvisation",
-  "Other",
-] as const;
-
 export const ROLE_LABEL: Record<Role, string> = {
   student: "Student",
   section_leader: "Section Leader",
