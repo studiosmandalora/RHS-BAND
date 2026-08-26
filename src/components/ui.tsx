@@ -150,8 +150,8 @@ export function Modal({
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative z-10 w-full max-w-sm rounded-t-3xl bg-white p-5 pb-8 shadow-2xl dark:bg-zinc-900 sm:rounded-3xl sm:pb-5">
-        <div className="mb-3 flex items-center justify-between">
+      <div className="relative z-10 flex max-h-[90dvh] w-full max-w-sm flex-col rounded-t-3xl bg-white shadow-2xl dark:bg-zinc-900 sm:rounded-3xl">
+        <div className="flex items-center justify-between border-b border-black/5 px-5 py-3 dark:border-white/10">
           <h2 className="text-base font-bold text-ink dark:text-zinc-100">
             {title}
           </h2>
@@ -162,7 +162,9 @@ export function Modal({
             <X className="size-5" />
           </button>
         </div>
-        {children}
+        <div className="overflow-y-auto px-5 py-4 pb-8 overscroll-contain sm:pb-5">
+          {children}
+        </div>
       </div>
     </div>
   );
