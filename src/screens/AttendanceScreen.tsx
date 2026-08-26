@@ -1,12 +1,33 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
-import { Check, ClipboardCheck, Download, Users, X } from "lucide-react";
+import {
+  Check,
+  ClipboardCheck,
+  Download,
+  Users,
+  X,
+} from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { overrideAttendance } from "../lib/rpc";
 import type { AttendanceRow, EventRow, Profile } from "../lib/types";
 import { endOfDay, fmtDate, relativeDay } from "../lib/date";
 import { INSTRUMENTS } from "../lib/constants";
-import { Alert, Badge, Button, Card, EmptyState, cn } from "../components/ui";
+import {
+  EXCUSE_REASONS,
+  getEventTypeLabel,
+} from "../lib/constants";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Field,
+  Input,
+  Modal,
+  Select,
+  cn,
+} from "../components/ui";
 import { Avatar } from "../components/Avatar";
 import { ProgressRing } from "../components/ProgressRing";
 
@@ -21,12 +42,21 @@ export default function AttendanceScreen() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
-  // Directors don't have attendance, so don't preselect themselves.
   const [selectedId, setSelectedId] = useState<string | null>(
     profile.roles.includes("director") ? null : profile.id
   );
   const [filter, setFilter] = useState<string>("All");
   const [error, setError] = useState<string | null>(null);
+
+  // Excused modal
+  const [excusedModal, setExcusedModal] = useState<{
+    studentId: string;
+    eventId: string;
+    studentName: string;
+  } | null>(null);
+  const [excuseReason, setExcuseReason] = useState("Sick");
+  const [excuseNote, setExcuseNote] = useState("");
+  const [excusing, setExcusing] = useState(false);
 
   useEffect(() => {
     void Promise.all([
@@ -40,19 +70,21 @@ export default function AttendanceScreen() {
     });
   }, []);
 
+  // Only required events that have already ended
   const pastEvents = useMemo(
     () =>
       events
         .filter(
           (e) =>
             new Date(e.date) < endOfDay(new Date()) &&
-            e.checkin_mode !== "none"
+            e.checkin_mode !== "none" &&
+            e.attendance_requirement === "required" &&
+            !e.archived
         )
         .sort((a, b) => +new Date(b.date) - +new Date(a.date)),
     [events]
   );
 
-  /* staff member lists (section leaders scoped to their own section) */
   const staffMembers = useMemo(() => {
     if (!isStaff) return [];
     const base = profiles.filter(
@@ -76,9 +108,17 @@ export default function AttendanceScreen() {
   function percentOf(memberId: string): number {
     if (pastEvents.length === 0) return 0;
     const attended = records.filter(
-      (r) => r.student_id === memberId && r.attended
+      (r) =>
+        r.student_id === memberId &&
+        (r.attended || r.status === "excused") &&
+        r.status !== "excused"  // Don't count excused as attended for percentage
     ).length;
-    return Math.round((attended / pastEvents.length) * 100);
+    const excused = records.filter(
+      (r) => r.student_id === memberId && r.status === "excused"
+    ).length;
+    const denominator = pastEvents.length - excused;
+    if (denominator <= 0) return 100;
+    return Math.round((attended / denominator) * 100);
   }
 
   function historyOf(memberId: string) {
@@ -90,6 +130,29 @@ export default function AttendanceScreen() {
     }));
   }
 
+  async function markExcused() {
+    if (!excusedModal) return;
+    setExcusing(true);
+    const { result, error } = await overrideAttendance(
+      excusedModal.eventId,
+      excusedModal.studentId,
+      "excused",
+      excuseReason,
+      excuseNote
+    );
+    setExcusing(false);
+    if (error || !result?.ok) {
+      setError(error?.message ?? result?.message ?? "Could not mark excused.");
+      return;
+    }
+    // Refresh records
+    const { data } = await supabase.from("attendance_records").select("*");
+    setRecords((data as AttendanceRow[]) ?? []);
+    setExcusedModal(null);
+    setExcuseReason("Sick");
+    setExcuseNote("");
+  }
+
   async function toggle(
     memberId: string,
     eventId: string,
@@ -97,7 +160,6 @@ export default function AttendanceScreen() {
   ) {
     const next = !currentlyAttended;
     setError(null);
-    // optimistic update
     setRecords((prev) =>
       next
         ? [
@@ -110,6 +172,11 @@ export default function AttendanceScreen() {
               student_id: memberId,
               attended: true,
               checked_in_at: new Date().toISOString(),
+              status: "present" as const,
+              excuse_reason: "",
+              staff_note: "",
+              is_late: false,
+              marked_by: null,
             } as AttendanceRow,
           ]
         : prev.filter(
@@ -123,22 +190,16 @@ export default function AttendanceScreen() {
     );
     if (error || !result?.ok) {
       setError(error?.message ?? result?.message ?? "Override failed.");
-      // refetch the authoritative state to undo the optimistic change
       const { data } = await supabase.from("attendance_records").select("*");
       setRecords((data as AttendanceRow[]) ?? []);
     }
   }
 
-  // Directors don't have attendance tracked — they run the band, they don't
-  // check in. Personal card/history only applies to members.
   const isDirectorView = profile.roles.includes("director");
   const myPercent = isDirectorView ? 0 : percentOf(profile.id);
   const myHistory = isDirectorView ? [] : historyOf(profile.id);
 
-  /* --------------- director: full-roster season CSV export --------------- */
   function exportCsv() {
-    // The whole roster (students + section leaders), regardless of the filter
-    // chip, with one column per past event plus an attendance percentage.
     const roster = profiles.filter(
       (p) => p.roles.includes("student") || p.roles.includes("section_leader")
     );
@@ -151,18 +212,25 @@ export default function AttendanceScreen() {
       "Attendance %",
     ];
     const rows = roster.map((m) => {
-      const attended = records.filter(
-        (r) => r.student_id === m.id && r.attended
+      const mExcused = records.filter(
+        (r) => r.student_id === m.id && r.status === "excused"
+      ).length;
+      const mAttended = records.filter(
+        (r) => r.student_id === m.id && r.attended && r.status !== "excused"
       ).length;
       const cells = pastEvents.map((ev) => {
         const rec = records.find(
           (r) => r.event_id === ev.id && r.student_id === m.id
         );
-        return rec?.attended ? "Present" : "Missed";
+        if (!rec) return "Absent";
+        if (rec.status === "excused") return "Excused";
+        if (rec.status === "late") return "Late";
+        return rec.attended ? "Present" : "Absent";
       });
-      const pct = pastEvents.length
-        ? Math.round((attended / pastEvents.length) * 100)
-        : 0;
+      const denominator = pastEvents.length - mExcused;
+      const pct = denominator > 0
+        ? Math.round((mAttended / denominator) * 100)
+        : 100;
       return [
         m.display_name || m.full_name,
         m.instrument,
@@ -192,7 +260,7 @@ export default function AttendanceScreen() {
             Attendance
           </h1>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {pastEvents.length} past event{pastEvents.length === 1 ? "" : "s"} tracked
+            {pastEvents.length} required event{pastEvents.length === 1 ? "" : "s"} tracked
           </p>
         </div>
         {isDirector && pastEvents.length > 0 && (
@@ -202,7 +270,7 @@ export default function AttendanceScreen() {
         )}
       </div>
 
-      {/* personal card — directors don't track their own attendance */}
+      {/* personal card */}
       {!isDirectorView && (
         <Card className="flex items-center gap-5 p-5">
           <ProgressRing percent={myPercent}>
@@ -218,10 +286,15 @@ export default function AttendanceScreen() {
               {profile.display_name || profile.full_name}
             </p>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              {records.filter((r) => r.student_id === profile.id && r.attended)
+              {records.filter((r) => r.student_id === profile.id && r.attended && r.status !== "excused")
                 .length}{" "}
               of {pastEvents.length} events attended
             </p>
+            {records.filter((r) => r.student_id === profile.id && r.status === "excused").length > 0 && (
+              <p className="mt-0.5 text-xs text-amber-600 dark:text-amber-400">
+                {records.filter((r) => r.student_id === profile.id && r.status === "excused").length} excused absence{records.filter((r) => r.student_id === profile.id && r.status === "excused").length === 1 ? "" : "s"}
+              </p>
+            )}
             {pastEvents.length === 0 && (
               <p className="mt-1 text-xs text-zinc-400">
                 No past events yet — attendance starts after the first one.
@@ -241,7 +314,7 @@ export default function AttendanceScreen() {
             <EmptyState
               icon={<ClipboardCheck className="size-6" />}
               title="Nothing to show yet"
-              subtitle="Past events will appear here with present / missed status."
+              subtitle="Past events will appear here with present / excused / missed status."
             />
           ) : (
             <div className="space-y-2">
@@ -249,7 +322,7 @@ export default function AttendanceScreen() {
                 <HistoryRow
                   key={event.id}
                   event={event}
-                  attended={rec?.attended ?? false}
+                  record={rec}
                   editable={false}
                 />
               ))}
@@ -265,7 +338,6 @@ export default function AttendanceScreen() {
             Roster overview
           </p>
 
-          {/* filter chips */}
           <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
             {filterChips.map((f) => (
               <button
@@ -330,7 +402,7 @@ export default function AttendanceScreen() {
             </div>
           )}
 
-          {/* selected member detail with toggles */}
+          {/* selected member detail */}
           {selectedId && (
             <div className="mt-4">
               {error && (
@@ -344,10 +416,17 @@ export default function AttendanceScreen() {
                     <HistoryRow
                       key={event.id}
                       event={event}
-                      attended={rec?.attended ?? false}
+                      record={rec}
                       editable
                       onToggle={() =>
                         void toggle(selectedId, event.id, rec?.attended ?? false)
+                      }
+                      onExcuse={() =>
+                        setExcusedModal({
+                          studentId: selectedId,
+                          eventId: event.id,
+                          studentName: profiles.find((p) => p.id === selectedId)?.display_name || "Student",
+                        })
                       }
                     />
                   ))}
@@ -357,60 +436,153 @@ export default function AttendanceScreen() {
           )}
         </div>
       )}
+
+      {/* Excused modal */}
+      <Modal
+        open={excusedModal !== null}
+        onClose={() => setExcusedModal(null)}
+        title="Mark excused"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Mark <span className="font-semibold text-ink dark:text-zinc-200">{excusedModal?.studentName}</span> as excused.
+          </p>
+          <Field label="Reason">
+            <Select value={excuseReason} onChange={(e) => setExcuseReason(e.target.value)}>
+              {EXCUSE_REASONS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Staff note (optional)">
+            <Input
+              value={excuseNote}
+              onChange={(e) => setExcuseNote(e.target.value)}
+              placeholder="Additional details..."
+            />
+          </Field>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setExcusedModal(null)}>
+              Cancel
+            </Button>
+            <Button className="flex-1" loading={excusing} onClick={() => void markExcused()}>
+              Mark excused
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
 
 function HistoryRow({
   event,
-  attended,
+  record,
   editable,
   onToggle,
+  onExcuse,
 }: {
   event: EventRow;
-  attended: boolean;
+  record?: AttendanceRow;
   editable: boolean;
   onToggle?: () => void;
+  onExcuse?: () => void;
 }) {
+  const attended = record?.attended ?? false;
+  const status = record?.status ?? "absent";
+  const isLate = record?.is_late ?? status === "late";
+  const isExcused = status === "excused";
+
+  const statusColor = isExcused
+    ? "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+    : isLate
+      ? "bg-orange-50 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300"
+      : attended
+        ? "bg-moss text-forest dark:bg-forest/40 dark:text-moss"
+        : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800";
+
+  const iconColor = isExcused
+    ? "bg-amber-50 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300"
+    : isLate
+      ? "bg-orange-50 text-orange-500 dark:bg-orange-950/60 dark:text-orange-300"
+      : attended
+        ? "bg-moss text-forest dark:bg-forest/40 dark:text-moss"
+        : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800";
+
   return (
-    <Card className="flex items-center gap-3 p-3.5">
-      <div
-        className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-full",
-          attended
-            ? "bg-moss text-forest dark:bg-forest/40 dark:text-moss"
-            : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800"
-        )}
-      >
-        {attended ? <Check className="size-5" /> : <X className="size-5" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-ink dark:text-zinc-100">
-          {event.name}
-        </p>
-        <p className="text-xs text-zinc-400">
-          {relativeDay(event.date)} · {fmtDate(new Date(event.date))}
-        </p>
-      </div>
-      {editable ? (
-        <Button
-          size="sm"
-          variant={attended ? "outline" : "gold"}
-          onClick={onToggle}
+    <Card className="p-3.5">
+      <div className="flex items-center gap-3">
+        <div
+          className={cn(
+            "flex size-9 shrink-0 items-center justify-center rounded-full",
+            iconColor
+          )}
         >
-          {attended ? "Missed" : "Present"}
-        </Button>
-      ) : (
-        <Badge
-          className={
-            attended
-              ? "bg-moss text-forest dark:bg-forest/40 dark:text-moss"
-              : "bg-zinc-100 text-zinc-400 dark:bg-zinc-800"
-          }
-        >
-          {attended ? "Present" : "Missed"}
-        </Badge>
-      )}
+          {isExcused ? (
+            <span className="text-sm">✓</span>
+          ) : isLate ? (
+            <span className="text-sm">⏰</span>
+          ) : attended ? (
+            <Check className="size-5" />
+          ) : (
+            <X className="size-5" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-ink dark:text-zinc-100">
+            {event.name}
+          </p>
+          <p className="text-xs text-zinc-400">
+            {getEventTypeLabel(event.event_type || event.type)} · {relativeDay(event.date)} · {fmtDate(new Date(event.date))}
+          </p>
+          {record?.checked_in_at && (
+            <p className="mt-0.5 text-[11px] text-zinc-400">
+              Checked in: {new Date(record.checked_in_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+            </p>
+          )}
+          {isExcused && record?.excuse_reason && (
+            <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+              Excused: {record.excuse_reason}
+            </p>
+          )}
+          {record?.staff_note && (
+            <p className="mt-0.5 text-[11px] text-zinc-400 italic">
+              Note: {record.staff_note}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {isLate && (
+            <Badge className="bg-orange-100 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300">
+              Late
+            </Badge>
+          )}
+          {editable ? (
+            <>
+              <Button
+                size="sm"
+                variant={attended ? "outline" : "gold"}
+                onClick={onToggle}
+              >
+                {attended ? "Mark absent" : "Mark present"}
+              </Button>
+              {onExcuse && !isExcused && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onExcuse}
+                >
+                  Excuse
+                </Button>
+              )}
+            </>
+          ) : (
+            <Badge className={statusColor}>
+              {isExcused ? "Excused" : isLate ? "Late" : attended ? "Present" : "Absent"}
+            </Badge>
+          )}
+        </div>
+      </div>
     </Card>
   );
 }

@@ -7,12 +7,14 @@ import {
   useNavigate,
 } from "react-router-dom";
 import {
+  BarChart3,
   Bell,
   CalendarDays,
   ClipboardCheck,
   KeyRound,
   LogOut,
   QrCode,
+  Timer,
   User,
   Users,
 } from "lucide-react";
@@ -300,7 +302,9 @@ const TABS: { to: string; label: string; icon: typeof CalendarDays; roles: Role[
     { to: "/", label: "Calendar", icon: CalendarDays, roles: ["student", "section_leader", "secretary", "director"] },
     { to: "/checkin", label: "Check-In", icon: QrCode, roles: ["student", "section_leader", "secretary", "director"] },
     { to: "/attendance", label: "Attendance", icon: ClipboardCheck, roles: ["student", "section_leader", "secretary", "director"] },
+    { to: "/practice", label: "Practice", icon: Timer, roles: ["student", "section_leader"] },
     { to: "/roster", label: "Roster", icon: Users, roles: ["section_leader", "director"] },
+    { to: "/analytics", label: "Analytics", icon: BarChart3, roles: ["director"] },
     { to: "/profile", label: "Profile", icon: User, roles: ["student", "section_leader", "secretary", "director"] },
   ];
 

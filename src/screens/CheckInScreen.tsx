@@ -37,8 +37,12 @@ import type {
   Profile,
 } from "../lib/types";
 import { fmtTime, parseTokenFromString, startOfDay } from "../lib/date";
-import { EVENT_TYPE_CHIP, EVENT_TYPE_LABEL } from "../lib/constants";
-import { Alert, Badge, Button, Card, Modal, cn } from "../components/ui";
+import {
+  EXCUSE_REASONS,
+  getEventTypeChip,
+  getEventTypeLabel,
+} from "../lib/constants";
+import { Alert, Badge, Button, Card, Modal, Select, cn } from "../components/ui";
 import { Avatar } from "../components/Avatar";
 
 interface ActiveSession {
@@ -53,7 +57,6 @@ export default function CheckInScreen() {
   const navigate = useNavigate();
   const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear any pending post-check-in navigation if this screen unmounts.
   useEffect(() => {
     return () => {
       if (navTimer.current) clearTimeout(navTimer.current);
@@ -64,7 +67,6 @@ export default function CheckInScreen() {
     profile.roles.includes("director") ||
     profile.roles.includes("secretary") ||
     profile.roles.includes("section_leader");
-  // Only directors and secretaries can change an event's check-in method.
   const isCheckinManager =
     profile.roles.includes("director") || profile.roles.includes("secretary");
 
@@ -96,6 +98,15 @@ export default function CheckInScreen() {
   >("idle");
   const [manualMessage, setManualMessage] = useState<string | null>(null);
 
+  // staff: excused modal
+  const [excusedModal, setExcusedModal] = useState<{
+    studentId: string;
+    studentName: string;
+  } | null>(null);
+  const [excuseReason, setExcuseReason] = useState("Sick");
+  const [excuseNote, setExcuseNote] = useState("");
+  const [excusing, setExcusing] = useState(false);
+
   const [searchParams, setSearchParams] = useSearchParams();
   const urlToken = searchParams.get("token");
 
@@ -111,9 +122,8 @@ export default function CheckInScreen() {
         .limit(20)
         .then(({ data }) => {
           if (cancelled) return;
-          // Only events that haven't ended yet can accept check-ins. An event
-          // is over once its end time passes (fallback: 24h after it starts).
           const rows = ((data as EventRow[]) ?? []).filter((e) => {
+            if (e.archived) return false;
             const end = e.end_date
               ? new Date(e.end_date).getTime()
               : new Date(e.date).getTime() + 24 * 60 * 60 * 1000;
@@ -121,9 +131,6 @@ export default function CheckInScreen() {
           });
           setUpcomingEvents(rows);
           setSelectedEvent((prev) => {
-            // Keep the current pick if it's still upcoming; otherwise default to
-            // the earliest. Two events can share a date, so we never collapse to
-            // a single "next" event.
             if (prev && rows.some((e) => e.id === prev.id)) return prev;
             return rows[0] ?? null;
           });
@@ -152,12 +159,9 @@ export default function CheckInScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedEvent?.id]);
 
-  /** Switch which event this screen is running check-in for. */
   function selectEvent(ev: EventRow) {
     setSelectedEvent(ev);
     setStaffError(null);
-    // A QR code belongs to one event — drop it when switching so a code is
-    // never shown against the wrong event's header.
     setSession((s) => (s && s.event_id !== ev.id ? null : s));
     if (!isStaff) void refreshMyRecord(ev.id);
   }
@@ -225,7 +229,6 @@ export default function CheckInScreen() {
     });
   }, [isStaff]);
 
-  /* the roster relevant to this check-in: their section, or everyone */
   const relevantMembers = useMemo(() => {
     const list = Object.values(roster).filter(
       (p) => p.roles.includes("student") || p.roles.includes("section_leader")
@@ -273,10 +276,8 @@ export default function CheckInScreen() {
     });
   }
 
-  /** Director/secretary: switch how this event collects attendance. */
   async function setCheckinMode(mode: CheckinMode) {
     if (!selectedEvent || selectedEvent.checkin_mode === mode) return;
-    // A QR session belongs to QR mode — drop it when switching to toggle.
     if (mode === "toggle") setSession(null);
     setSelectedEvent({ ...selectedEvent, checkin_mode: mode });
     setStaffError(null);
@@ -287,12 +288,38 @@ export default function CheckInScreen() {
     if (error) setStaffError(error.message);
   }
 
+  /** Mark a student as excused. */
+  async function markExcused() {
+    if (!excusedModal || !selectedEvent) return;
+    setExcusing(true);
+    const { result, error } = await overrideAttendance(
+      selectedEvent.id,
+      excusedModal.studentId,
+      "excused",
+      excuseReason,
+      excuseNote
+    );
+    setExcusing(false);
+    if (error || !result?.ok) {
+      setStaffError(error?.message ?? result?.message ?? "Could not mark excused.");
+      return;
+    }
+    // Refresh check-in list
+    const { data } = await supabase
+      .from("attendance_records")
+      .select("*")
+      .eq("event_id", selectedEvent.id);
+    setLiveCheckins((data as AttendanceRow[]) ?? []);
+    setExcusedModal(null);
+    setExcuseReason("Sick");
+    setExcuseNote("");
+  }
+
   /** Toggle mode: staff mark a member present/absent on the spot. */
   async function toggleAttendance(memberId: string, currentlyAttended: boolean) {
     if (!selectedEvent) return;
     const next = !currentlyAttended;
     setStaffError(null);
-    // optimistic update
     setLiveCheckins((prev) =>
       next
         ? [
@@ -303,6 +330,11 @@ export default function CheckInScreen() {
               student_id: memberId,
               attended: true,
               checked_in_at: new Date().toISOString(),
+              status: "present" as const,
+              excuse_reason: "",
+              staff_note: "",
+              is_late: false,
+              marked_by: null,
             } as AttendanceRow,
           ]
         : prev.filter((r) => r.student_id !== memberId)
@@ -316,7 +348,6 @@ export default function CheckInScreen() {
       setStaffError(
         error?.message ?? result?.message ?? "Could not update attendance."
       );
-      // refetch authoritative state to undo the optimistic change
       const { data } = await supabase
         .from("attendance_records")
         .select("*")
@@ -341,14 +372,13 @@ export default function CheckInScreen() {
       return;
     }
     setScanState("success");
+    const lateMsg = result.is_late ? " (late)" : "";
     setScanMessage(
-      `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
+      `${result.event_name} · checked in${lateMsg} at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
     );
-    // Show the event they actually checked in for (not just the earliest one).
     const ev = upcomingEvents.find((e) => e.id === result.event_id);
     if (ev) setSelectedEvent(ev);
     void refreshMyRecord(result.event_id);
-    // Once checked in, take them straight to the attendance screen.
     if (navTimer.current) clearTimeout(navTimer.current);
     navTimer.current = setTimeout(() => navigate("/attendance"), 1200);
   }
@@ -373,10 +403,10 @@ export default function CheckInScreen() {
       return;
     }
     setManualState("success");
+    const lateMsg = result.is_late ? " (late)" : "";
     setManualMessage(
-      `${result.event_name} · checked in at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
+      `${result.event_name} · checked in${lateMsg} at ${result.checked_in_at ? fmtTime(result.checked_in_at) : ""}`
     );
-    // Show the event they actually checked in for.
     const ev = upcomingEvents.find((e) => e.id === result.event_id);
     if (ev) setSelectedEvent(ev);
     void refreshMyRecord(result.event_id);
@@ -394,8 +424,6 @@ export default function CheckInScreen() {
     if (!scanOpen) return;
     let cancelled = false;
     let scanner: Html5Qrcode | null = null;
-    // html5-qrcode (~400 kB) is dynamically imported so phones don't pay for
-    // the scanner bundle unless a student actually opens the camera.
     void import("html5-qrcode").then(({ Html5Qrcode: H }) => {
       if (cancelled) return;
       scanner = new H("qr-reader");
@@ -442,9 +470,6 @@ export default function CheckInScreen() {
           });
       }
     };
-    // scanAttempt lets "Try again" tear down the old scanner and start a
-    // fresh one — otherwise retrying just reset the text and left a dead
-    // camera feed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scanOpen, scanAttempt]);
 
@@ -482,7 +507,7 @@ export default function CheckInScreen() {
         </Card>
       ) : (
         <>
-          {/* event picker — two events can share a date, so pick which one */}
+          {/* event picker */}
           {upcomingEvents.length > 1 && (
             <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
               {upcomingEvents.map((ev) => (
@@ -505,7 +530,7 @@ export default function CheckInScreen() {
           {/* selected event hero */}
           <Card className="mb-4 overflow-hidden">
             <div className="flex items-center gap-3 p-4">
-              <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-xl", EVENT_TYPE_CHIP[selectedEvent.type])}>
+              <div className={cn("flex size-11 shrink-0 items-center justify-center rounded-xl", getEventTypeChip(selectedEvent.event_type || selectedEvent.type))}>
                 <Music className="size-5" />
               </div>
               <div className="min-w-0 flex-1">
@@ -522,8 +547,8 @@ export default function CheckInScreen() {
                   )}
                 </p>
               </div>
-              <Badge className={EVENT_TYPE_CHIP[selectedEvent.type]}>
-                {EVENT_TYPE_LABEL[selectedEvent.type]}
+              <Badge className={getEventTypeChip(selectedEvent.event_type || selectedEvent.type)}>
+                {getEventTypeLabel(selectedEvent.event_type || selectedEvent.type)}
               </Badge>
             </div>
 
@@ -607,7 +632,7 @@ export default function CheckInScreen() {
                   </div>
                 ) : (
                   <>
-                {/* QR portion — available for 'qr' and 'both' */}
+                {/* QR portion */}
                 {selectedEvent.checkin_mode !== "toggle" && (
                   <div
                     className={
@@ -670,7 +695,7 @@ export default function CheckInScreen() {
                   </div>
                 )}
 
-                {/* live view: interactive roster (toggle/both) or read-only list (qr) */}
+                {/* live view */}
                 {selectedEvent.checkin_mode === "qr" ? (
                   session && !expired && (
                     <div className="mt-4">
@@ -706,6 +731,11 @@ export default function CheckInScreen() {
                                   <span className="flex items-center gap-1 text-[11px] font-bold text-forest dark:text-moss">
                                     <CheckCircle2 className="size-3.5" />
                                     {rec?.checked_in_at ? fmtTime(rec.checked_in_at) : "In"}
+                                    {rec?.is_late && (
+                                      <Badge className="ml-1 bg-orange-100 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300">
+                                        Late
+                                      </Badge>
+                                    )}
                                   </span>
                                 ) : (
                                   <span className="text-[11px] font-semibold text-zinc-400">
@@ -720,7 +750,7 @@ export default function CheckInScreen() {
                     </div>
                   )
                 ) : (
-                  /* toggle / both: staff tap each member present/absent */
+                  /* toggle / both */
                   <div>
                     <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-zinc-400">
                       <Users className="size-3.5" /> Present · {checkedInIds.size} of{" "}
@@ -737,14 +767,18 @@ export default function CheckInScreen() {
                             (r) => r.student_id === p.id
                           );
                           const done = Boolean(rec);
+                          const isExcused = rec?.status === "excused";
+                          const isLate = rec?.status === "late" || rec?.is_late;
                           return (
                             <div
                               key={p.id}
                               className={
                                 "flex items-center gap-2 rounded-xl px-3 py-2 " +
-                                (done
-                                  ? "bg-moss/70 dark:bg-forest/40"
-                                  : "bg-white/60 dark:bg-zinc-800")
+                                (isExcused
+                                  ? "bg-amber-50 dark:bg-amber-950/30"
+                                  : done
+                                    ? "bg-moss/70 dark:bg-forest/40"
+                                    : "bg-white/60 dark:bg-zinc-800")
                               }
                             >
                               <Avatar
@@ -755,17 +789,40 @@ export default function CheckInScreen() {
                               <span className="flex-1 truncate text-xs font-semibold text-ink dark:text-zinc-200">
                                 {p.display_name || p.full_name}
                               </span>
-                              <button
-                                onClick={() => void toggleAttendance(p.id, done)}
-                                className={cn(
-                                  "min-h-8 rounded-lg px-3 text-xs font-bold transition-colors",
-                                  done
-                                    ? "bg-forest text-white dark:bg-mid"
-                                    : "bg-white text-forest ring-1 ring-forest/30 dark:bg-zinc-700 dark:text-moss dark:ring-forest/50"
+                              <div className="flex items-center gap-1">
+                                {isLate && done && (
+                                  <Badge className="bg-orange-100 text-orange-600 dark:bg-orange-950/60 dark:text-orange-300">
+                                    Late
+                                  </Badge>
                                 )}
-                              >
-                                {done ? "Present" : "Mark present"}
-                              </button>
+                                {isExcused && (
+                                  <Badge className="bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-300">
+                                    Excused
+                                  </Badge>
+                                )}
+                                {!isExcused && (
+                                  <button
+                                    onClick={() => void toggleAttendance(p.id, done)}
+                                    className={cn(
+                                      "min-h-8 rounded-lg px-3 text-xs font-bold transition-colors",
+                                      done
+                                        ? "bg-forest text-white dark:bg-mid"
+                                        : "bg-white text-forest ring-1 ring-forest/30 dark:bg-zinc-700 dark:text-moss dark:ring-forest/50"
+                                    )}
+                                  >
+                                    {done ? "Present" : "Mark present"}
+                                  </button>
+                                )}
+                                {isCheckinManager && !isExcused && (
+                                  <button
+                                    onClick={() => setExcusedModal({ studentId: p.id, studentName: p.display_name || p.full_name })}
+                                    className="min-h-8 rounded-lg px-2 text-xs font-bold text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                                    title="Mark excused"
+                                  >
+                                    Excuse
+                                  </button>
+                                )}
+                              </div>
                             </div>
                           );
                         })}
@@ -781,17 +838,37 @@ export default function CheckInScreen() {
             {/* student: status + scan */}
             {!isStaff && (
               <div className="border-t border-black/5 bg-cream p-4 dark:border-white/10 dark:bg-zinc-950/40">
-                {myRecord?.attended ? (
-                  <div className="flex items-center gap-3 rounded-xl bg-moss px-4 py-3 dark:bg-forest/30">
-                    <CheckCircle2 className="size-7 shrink-0 text-forest dark:text-gold" />
+                {myRecord?.attended || myRecord?.status === "excused" ? (
+                  <div className={cn(
+                    "flex items-center gap-3 rounded-xl px-4 py-3",
+                    myRecord.status === "excused"
+                      ? "bg-amber-50 dark:bg-amber-950/30"
+                      : "bg-moss dark:bg-forest/30"
+                  )}>
+                    {myRecord.status === "excused" ? (
+                      <CheckCircle2 className="size-7 shrink-0 text-amber-600 dark:text-amber-400" />
+                    ) : (
+                      <CheckCircle2 className="size-7 shrink-0 text-forest dark:text-gold" />
+                    )}
                     <div>
-                      <p className="text-sm font-bold text-forest dark:text-moss">
-                        You're checked in!
+                      <p className={cn(
+                        "text-sm font-bold",
+                        myRecord.status === "excused"
+                          ? "text-amber-700 dark:text-amber-300"
+                          : "text-forest dark:text-moss"
+                      )}>
+                        {myRecord.status === "excused"
+                          ? "You're excused"
+                          : myRecord.is_late
+                            ? "You're checked in (late)"
+                            : "You're checked in!"}
                       </p>
                       <p className="text-xs text-forest/70 dark:text-moss/70">
-                        {myRecord.checked_in_at
-                          ? `Scanned in at ${fmtTime(myRecord.checked_in_at)}`
-                          : "Marked present"}
+                        {myRecord.status === "excused"
+                          ? `Excused: ${myRecord.excuse_reason || "No reason given"}`
+                          : myRecord.checked_in_at
+                            ? `Checked in at ${fmtTime(myRecord.checked_in_at)}`
+                            : "Marked present"}
                       </p>
                     </div>
                   </div>
@@ -841,6 +918,48 @@ export default function CheckInScreen() {
         </>
       )}
 
+      {/* Excused modal */}
+      <Modal
+        open={excusedModal !== null}
+        onClose={() => setExcusedModal(null)}
+        title="Mark excused"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Mark <span className="font-semibold text-ink dark:text-zinc-200">{excusedModal?.studentName}</span> as excused for this event.
+          </p>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Reason
+            </label>
+            <Select value={excuseReason} onChange={(e) => setExcuseReason(e.target.value)}>
+              {EXCUSE_REASONS.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Staff note (optional)
+            </label>
+            <input
+              value={excuseNote}
+              onChange={(e) => setExcuseNote(e.target.value)}
+              placeholder="Additional details..."
+              className="w-full min-h-11 rounded-xl bg-cream px-4 text-base text-ink placeholder:text-zinc-400 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10 dark:focus:ring-mid"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setExcusedModal(null)}>
+              Cancel
+            </Button>
+            <Button className="flex-1" loading={excusing} onClick={() => void markExcused()}>
+              Mark excused
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* scanner overlay */}
       {scanOpen && (
         <div className="fixed inset-0 z-50 flex flex-col bg-black">
@@ -866,7 +985,6 @@ export default function CheckInScreen() {
               <div className="overflow-hidden rounded-2xl ring-4 ring-white/20">
                 <div id="qr-reader" className="[&_video]:w-full [&_video]:object-cover" />
               </div>
-              {/* corner brackets */}
               <div className="pointer-events-none absolute inset-0">
                 <div className="absolute left-2 top-2 size-8 rounded-tl-lg border-l-4 border-t-4 border-gold" />
                 <div className="absolute right-2 top-2 size-8 rounded-tr-lg border-r-4 border-t-4 border-gold" />
@@ -901,98 +1019,58 @@ export default function CheckInScreen() {
                     Close
                   </Button>
                   <Button
-                    variant="gold"
                     className="flex-1"
                     onClick={() => {
                       setScanState("scanning");
                       setScanMessage(null);
-                      // Restart the camera from scratch (the previous scanner
-                      // was stopped after a decode or failed to start).
                       setScanAttempt((n) => n + 1);
                     }}
                   >
                     Try again
                   </Button>
                 </div>
-                <Button
-                  variant="gold"
-                  className="mt-3 w-full"
-                  onClick={() => {
-                    setScanOpen(false);
-                    setManualCode("");
-                    setManualState("idle");
-                    setManualMessage(null);
-                    setManualOpen(true);
-                  }}
-                >
-                  <Keyboard className="size-4" /> Enter code manually
-                </Button>
               </div>
             ) : (
-              <p className="text-center text-xs text-white/60">
-                Scanning for a check-in code…
+              <p className="text-center text-sm text-white/60">
+                Hold your phone steady over the QR code
               </p>
             )}
           </div>
         </div>
       )}
 
-      {/* manual code entry fallback */}
+      {/* manual code modal */}
       <Modal
         open={manualOpen}
         onClose={() => setManualOpen(false)}
-        title={manualState === "success" ? "Checked in" : "Enter check-in code"}
+        title="Enter check-in code"
       >
-        {manualState === "success" ? (
-          <div className="text-center">
-            <CheckCircle2 className="mx-auto mb-2 size-10 text-forest dark:text-gold" />
-            <p className="text-base font-black text-ink dark:text-zinc-100">
-              You're checked in!
-            </p>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              {manualMessage}
-            </p>
-            <Button className="mt-5 w-full" onClick={() => setManualOpen(false)}>
-              Done
-            </Button>
-          </div>
-        ) : (
-          <form onSubmit={submitManualCode} className="space-y-4">
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              The staff member at the door shows a short code on their screen.
-              Type it here to check in.
-            </p>
-            <input
-              value={manualCode}
-              onChange={(e) => {
-                setManualCode(
-                  e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")
-                );
-                if (manualState === "error") {
-                  setManualState("idle");
-                  setManualMessage(null);
-                }
-              }}
-              placeholder="e.g. K7Q2P3M9"
-              maxLength={8}
-              autoCapitalize="characters"
-              autoComplete="off"
-              autoFocus
-              className="w-full min-h-13 rounded-xl bg-cream px-4 text-center font-mono text-2xl font-black tracking-[0.35em] text-ink placeholder:text-zinc-300 ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10 dark:focus:ring-mid"
-            />
-            {manualState === "error" && manualMessage && (
-              <Alert tone="error">{manualMessage}</Alert>
-            )}
-            <Button
-              type="submit"
-              size="lg"
-              loading={manualState === "processing"}
-              className="w-full"
-            >
-              Check in
-            </Button>
-          </form>
-        )}
+        <form onSubmit={submitManualCode} className="space-y-4">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Type the 6–8 character code your teacher is displaying.
+          </p>
+          <input
+            value={manualCode}
+            onChange={(e) => setManualCode(e.target.value.toUpperCase())}
+            placeholder="e.g. ABCD1234"
+            autoCapitalize="characters"
+            className="w-full rounded-xl bg-cream px-4 py-3 text-center font-mono text-2xl font-black tracking-[0.2em] text-ink ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-mid dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+            autoFocus
+          />
+          {manualState === "success" && (
+            <div className="rounded-xl bg-moss px-4 py-3 text-center dark:bg-forest/30">
+              <p className="text-sm font-bold text-forest dark:text-moss">{manualMessage}</p>
+            </div>
+          )}
+          {manualState === "error" && (
+            <div className="rounded-xl bg-red-50 px-4 py-3 text-center dark:bg-red-950/60">
+              <p className="text-sm font-bold text-red-600 dark:text-red-300">{manualMessage}</p>
+            </div>
+          )}
+          <Button type="submit" size="lg" loading={manualState === "processing"} className="w-full">
+            Check in
+          </Button>
+        </form>
       </Modal>
     </div>
   );

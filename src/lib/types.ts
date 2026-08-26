@@ -1,9 +1,19 @@
 export type Role = "student" | "section_leader" | "secretary" | "director";
 
-export type EventType = "rehearsal" | "game" | "concert";
+/** Flexible event type — allows any text from the database. */
+export type EventType = string;
 
 /** How attendance is collected for an event: QR scan, staff toggle buttons, both, or none. */
 export type CheckinMode = "qr" | "toggle" | "both" | "none";
+
+/** Attendance requirement for an event. */
+export type AttendanceRequirement = "required" | "optional" | "none";
+
+/** Source of an event — manual or synced from Google Calendar. */
+export type EventSource = "manual" | "google_calendar";
+
+/** Attendance status values. */
+export type AttendanceStatus = "present" | "absent" | "excused" | "late";
 
 export interface Profile {
   id: string;
@@ -34,6 +44,14 @@ export interface EventRow {
   checkin_mode: CheckinMode;
   created_by: string;
   created_at: string;
+  // Enhanced event fields
+  event_type: string;
+  attendance_requirement: AttendanceRequirement;
+  event_source: EventSource;
+  archived: boolean;
+  late_minutes: number;
+  reminder_enabled: boolean;
+  reminder_minutes_before: number;
 }
 
 export interface CheckinSessionRow {
@@ -51,6 +69,12 @@ export interface AttendanceRow {
   student_id: string;
   attended: boolean;
   checked_in_at: string | null;
+  // Enhanced attendance fields
+  status: AttendanceStatus;
+  excuse_reason: string;
+  staff_note: string;
+  is_late: boolean;
+  marked_by: string | null;
 }
 
 export interface PersonalEventRow {
@@ -59,6 +83,17 @@ export interface PersonalEventRow {
   name: string;
   date: string;
   location: string;
+  created_at: string;
+}
+
+export interface PracticeLogRow {
+  id: string;
+  owner_id: string;
+  instrument: string;
+  date: string;
+  duration_minutes: number;
+  notes: string;
+  category: string;
   created_at: string;
 }
 
@@ -88,8 +123,15 @@ export interface RpcResult {
   event_id?: string;
   event_name?: string;
   checked_in_at?: string | null;
+  is_late?: boolean;
   temp_password?: string;
   member_id?: string;
   enabled?: boolean;
   code?: string;
+  percentage?: number;
+  present?: number;
+  late?: number;
+  excused?: number;
+  absent?: number;
+  total?: number;
 }

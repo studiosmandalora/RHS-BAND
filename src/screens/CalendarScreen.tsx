@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
+  Archive,
   CalendarDays,
   CalendarPlus,
   ChevronLeft,
   ChevronRight,
   Clock,
+  Cloud,
   MailCheck,
   MapPin,
   Music,
@@ -17,9 +19,9 @@ import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import type {
+  AttendanceRequirement,
   CheckinMode,
   EventRow,
-  EventType,
   PersonalEventRow,
   Profile,
 } from "../lib/types";
@@ -33,7 +35,13 @@ import {
   relativeDay,
   startOfDay,
 } from "../lib/date";
-import { EVENT_TYPE_CHIP, EVENT_TYPE_LABEL } from "../lib/constants";
+import {
+  ATTENDANCE_REQUIREMENT_CHIP,
+  ATTENDANCE_REQUIREMENT_LABEL,
+  EVENT_TYPES,
+  getEventTypeChip,
+  getEventTypeLabel,
+} from "../lib/constants";
 import {
   Alert,
   Badge,
@@ -43,27 +51,23 @@ import {
   Field,
   Input,
   Modal,
+  Select,
   cn,
 } from "../components/ui";
 
 const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"];
 
-/**
- * Check-in method implied by the event type: games, rehearsals and concerts
- * use QR codes; any other type falls back to staff toggle buttons.
- */
-function defaultCheckinMode(type: EventType): CheckinMode {
-  return type === "rehearsal" || type === "game" || type === "concert"
-    ? "qr"
-    : "toggle";
+/** Default check-in mode for an event type. */
+function defaultCheckinMode(type: string): CheckinMode {
+  const t = type.toLowerCase();
+  if (["rehearsal", "game", "concert", "competition", "performance"].includes(t))
+    return "qr";
+  if (["section meeting", "band meeting", "general meeting"].includes(t))
+    return "toggle";
+  return "toggle";
 }
 
-/**
- * Surface the real error message a Supabase Edge Function returns, instead of
- * the generic "Edge Function returned a non-2xx status code". The function's
- * JSON body (e.g. "Email reminders aren't configured yet…") lives in the
- * error's `context` Response.
- */
+/** Surface the real error message a Supabase Edge Function returns. */
 async function functionsErrorMessage(e: unknown): Promise<string> {
   if (e instanceof FunctionsHttpError) {
     try {
@@ -135,22 +139,28 @@ function EventCard({
   event,
   onEdit,
   onDelete,
+  onArchive,
   onRemind,
   reminding,
 }: {
   event: EventRow;
   onEdit?: (event: EventRow) => void;
   onDelete?: (event: EventRow) => void;
+  onArchive?: (event: EventRow) => void;
   onRemind?: (event: EventRow) => void;
   reminding?: boolean;
 }) {
+  const typeLabel = getEventTypeLabel(event.event_type || event.type);
+  const typeChip = getEventTypeChip(event.event_type || event.type);
+  const isGoogle = event.event_source === "google_calendar" || !!event.google_calendar_uid;
+
   return (
-    <Card className="p-4">
+    <Card className={cn("p-4", event.archived && "opacity-60")}>
       <div className="flex items-start gap-3">
         <div
           className={cn(
             "mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-xl",
-            EVENT_TYPE_CHIP[event.type]
+            typeChip
           )}
         >
           <Music className="size-5" />
@@ -160,9 +170,12 @@ function EventCard({
             <p className="truncate text-sm font-bold text-ink dark:text-zinc-100">
               {event.name}
             </p>
-            <Badge className={EVENT_TYPE_CHIP[event.type]}>
-              {EVENT_TYPE_LABEL[event.type]}
-            </Badge>
+            <Badge className={typeChip}>{typeLabel}</Badge>
+            {event.archived && (
+              <Badge className="bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                <Archive className="size-3" /> Archived
+              </Badge>
+            )}
           </div>
           <p className="mt-1 flex items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
             <Clock className="size-3.5" /> {fmtDateTime(event.date)}
@@ -172,6 +185,23 @@ function EventCard({
               <MapPin className="size-3.5" /> {event.location}
             </p>
           )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {event.attendance_requirement && (
+              <Badge className={ATTENDANCE_REQUIREMENT_CHIP[event.attendance_requirement]}>
+                {ATTENDANCE_REQUIREMENT_LABEL[event.attendance_requirement]}
+              </Badge>
+            )}
+            {isGoogle && (
+              <Badge className="bg-blue-50 text-blue-600 dark:bg-blue-950/60 dark:text-blue-300">
+                <Cloud className="size-3" /> Google Calendar
+              </Badge>
+            )}
+            {!isGoogle && event.event_source === "manual" && (
+              <Badge className="bg-green-50 text-green-600 dark:bg-green-950/60 dark:text-green-300">
+                Created in Band App
+              </Badge>
+            )}
+          </div>
         </div>
       </div>
       <a
@@ -202,6 +232,16 @@ function EventCard({
           <Trash2 className="size-4" /> Delete
         </Button>
       )}
+      {onArchive && !event.archived && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2 w-full"
+          onClick={() => onArchive(event)}
+        >
+          <Archive className="size-4" /> Archive
+        </Button>
+      )}
       {onRemind && (
         <Button
           size="sm"
@@ -219,9 +259,6 @@ function EventCard({
 
 export default function CalendarScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
-  // Only secretaries and directors can manually add one-off band events —
-  // everything else syncs from Google Calendar. Matches the
-  // events_insert_staff RLS policy.
   const canAdd =
     profile.roles.includes("director") || profile.roles.includes("secretary");
   const isDirector = profile.roles.includes("director");
@@ -235,15 +272,18 @@ export default function CalendarScreen() {
   const [personalEvents, setPersonalEvents] = useState<PersonalEventRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showEventForm, setShowEventForm] = useState(false);
-  // null = adding a new event; set = editing this band event.
   const [editingEvent, setEditingEvent] = useState<EventRow | null>(null);
 
   // add/edit-event form (band events)
   const [name, setName] = useState("");
-  const [type, setType] = useState<EventType>("rehearsal");
+  const [eventType, setEventType] = useState("Rehearsal");
   const [checkinMode, setCheckinMode] = useState<CheckinMode>("qr");
+  const [attendanceReq, setAttendanceReq] = useState<AttendanceRequirement>("required");
   const [date, setDate] = useState("");
+  const [endDate, setEndDate] = useState("");
   const [location, setLocation] = useState("");
+  const [description, setDescription] = useState("");
+  const [lateMinutes, setLateMinutes] = useState(10);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -258,9 +298,8 @@ export default function CalendarScreen() {
     null
   );
 
-  // director: email reminders for absent members
+  // director: email reminders
   const [remindingId, setRemindingId] = useState<string | null>(null);
-  // general action errors (e.g. delete failures)
   const [actionError, setActionError] = useState<string | null>(null);
   const [remindMsg, setRemindMsg] = useState<{
     tone: "success" | "error";
@@ -339,12 +378,19 @@ export default function CalendarScreen() {
       return;
     }
     setSaving(true);
+    const typeKey = eventType.toLowerCase();
     const payload = {
       name: name.trim(),
-      type,
+      type: typeKey,
+      event_type: eventType,
       checkin_mode: checkinMode,
+      attendance_requirement: attendanceReq,
       date: new Date(date).toISOString(),
+      end_date: endDate ? new Date(endDate).toISOString() : null,
       location: location.trim(),
+      description: description.trim(),
+      late_minutes: lateMinutes,
+      event_source: editingEvent?.event_source ?? "manual",
     };
     const { error } = editingEvent
       ? await supabase
@@ -361,12 +407,20 @@ export default function CalendarScreen() {
     }
     setShowEventForm(false);
     setEditingEvent(null);
-    setName("");
-    setType("rehearsal");
-    setCheckinMode("qr");
-    setDate("");
-    setLocation("");
+    resetForm();
     void loadEvents();
+  }
+
+  function resetForm() {
+    setName("");
+    setEventType("Rehearsal");
+    setCheckinMode("qr");
+    setAttendanceReq("required");
+    setDate("");
+    setEndDate("");
+    setLocation("");
+    setDescription("");
+    setLateMinutes(10);
   }
 
   async function remind(event: EventRow) {
@@ -398,16 +452,31 @@ export default function CalendarScreen() {
     }
   }
 
-  /** Director-only (matches events_delete_director): remove a band event. */
+  /** Director-only: delete a band event (with safety checks). */
   async function deleteEvent(event: EventRow) {
     const message = event.google_calendar_uid
-      ? `Delete “${event.name}”? It syncs from Google Calendar, so it will come back on the next sync — remove it in Google Calendar if you want it gone permanently.`
-      : `Delete “${event.name}” from the calendar? This can't be undone.`;
+      ? `Delete "${event.name}"? It syncs from Google Calendar, so it will come back on the next sync — remove it in Google Calendar if you want it gone permanently.`
+      : `Delete "${event.name}" from the calendar? This can't be undone.`;
     if (!window.confirm(message)) return;
     setActionError(null);
     const { error } = await supabase
       .from("events")
       .delete()
+      .eq("id", event.id);
+    if (error) {
+      setActionError(error.message);
+      return;
+    }
+    void loadEvents();
+  }
+
+  /** Director: archive an event instead of deleting it. */
+  async function archiveEvent(event: EventRow) {
+    if (!window.confirm(`Archive "${event.name}"? It will be hidden from active views but attendance history is preserved.`)) return;
+    setActionError(null);
+    const { error } = await supabase
+      .from("events")
+      .update({ archived: true })
       .eq("id", event.id);
     if (error) {
       setActionError(error.message);
@@ -424,25 +493,39 @@ export default function CalendarScreen() {
         tomorrow.getDate()
       )}T${pad(tomorrow.getHours())}:${pad(tomorrow.getMinutes())}`
     );
-    setCheckinMode(defaultCheckinMode(type));
+    setCheckinMode(defaultCheckinMode("Rehearsal"));
     setFormError(null);
     setEditingEvent(null);
+    resetForm();
     setShowEventForm(true);
   }
 
-  /** Staff (director/secretary): populate the form from an existing event. */
+  /** Staff: populate the form from an existing event. */
   function openEdit(event: EventRow) {
     const d = new Date(event.date);
     const pad = (n: number) => String(n).padStart(2, "0");
     setName(event.name);
-    setType(event.type);
+    setEventType(event.event_type || event.type || "Rehearsal");
     setCheckinMode(event.checkin_mode);
+    setAttendanceReq(event.attendance_requirement || "required");
     setDate(
       `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
         d.getHours()
       )}:${pad(d.getMinutes())}`
     );
+    if (event.end_date) {
+      const ed = new Date(event.end_date);
+      setEndDate(
+        `${ed.getFullYear()}-${pad(ed.getMonth() + 1)}-${pad(ed.getDate())}T${pad(
+          ed.getHours()
+        )}:${pad(ed.getMinutes())}`
+      );
+    } else {
+      setEndDate("");
+    }
     setLocation(event.location);
+    setDescription(event.description);
+    setLateMinutes(event.late_minutes ?? 10);
     setFormError(null);
     setEditingEvent(event);
     setShowEventForm(true);
@@ -488,7 +571,7 @@ export default function CalendarScreen() {
   async function deletePersonal(ev: PersonalEventRow) {
     if (
       !window.confirm(
-        `Remove “${ev.name}” from your calendar? This only deletes your personal event.`
+        `Remove "${ev.name}" from your calendar? This only deletes your personal event.`
       )
     )
       return;
@@ -650,6 +733,7 @@ export default function CalendarScreen() {
                   event={ev}
                   onEdit={canAdd ? (e) => openEdit(e) : undefined}
                   onDelete={isDirector ? (e) => void deleteEvent(e) : undefined}
+                  onArchive={isDirector ? (e) => void archiveEvent(e) : undefined}
                   onRemind={isDirector ? remind : undefined}
                   reminding={remindingId === ev.id}
                 />
@@ -670,10 +754,10 @@ export default function CalendarScreen() {
       >
         <form onSubmit={submitEvent} className="space-y-4">
           {editingEvent?.google_calendar_uid && (
-            <Alert tone="error">
+            <Alert tone="info">
               This event syncs from Google Calendar — name, type, date and
               location changes will be overwritten by the next sync. Check-in
-              method changes stick.
+              method and attendance settings stick.
             </Alert>
           )}
           <Field label="Event name">
@@ -683,33 +767,49 @@ export default function CalendarScreen() {
               placeholder="e.g. Homecoming Game"
             />
           </Field>
-          <Field label="Type">
+          <Field label="Event type">
+            <Select
+              value={eventType}
+              onChange={(e) => {
+                setEventType(e.target.value);
+                setCheckinMode(defaultCheckinMode(e.target.value));
+              }}
+            >
+              {EVENT_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field
+            label="Attendance"
+            hint="Whether students are expected to check in."
+          >
             <div className="grid grid-cols-3 gap-2">
-              {(["rehearsal", "game", "concert"] as EventType[]).map((t) => (
+              {(["required", "optional", "none"] as AttendanceRequirement[]).map((r) => (
                 <button
                   type="button"
-                  key={t}
+                  key={r}
                   onClick={() => {
-                    setType(t);
-                    // Games, rehearsals & concerts check in by QR; other types
-                    // fall back to toggle buttons.
-                    setCheckinMode(defaultCheckinMode(t));
+                    setAttendanceReq(r);
+                    if (r === "none") setCheckinMode("none");
                   }}
                   className={cn(
                     "min-h-10 rounded-xl text-xs font-semibold transition-colors",
-                    type === t
-                      ? EVENT_TYPE_CHIP[t]
+                    attendanceReq === r
+                      ? ATTENDANCE_REQUIREMENT_CHIP[r]
                       : "bg-cream text-zinc-500 ring-1 ring-black/10 dark:bg-zinc-800 dark:text-zinc-400 dark:ring-white/10"
                   )}
                 >
-                  {EVENT_TYPE_LABEL[t]}
+                  {ATTENDANCE_REQUIREMENT_LABEL[r]}
                 </button>
               ))}
             </div>
           </Field>
           <Field
             label="Check-in method"
-            hint="QR (default for games, rehearsals & concerts), toggle, both, or none (no attendance)."
+            hint="How attendance is collected."
           >
             <div className="grid grid-cols-2 gap-2">
               {(["qr", "toggle", "both", "none"] as CheckinMode[]).map((m) => (
@@ -744,11 +844,34 @@ export default function CalendarScreen() {
               onChange={(e) => setDate(e.target.value)}
             />
           </Field>
+          <Field label="End time (optional)">
+            <Input
+              type="datetime-local"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </Field>
           <Field label="Location">
             <Input
               value={location}
               onChange={(e) => setLocation(e.target.value)}
               placeholder="RHS Stadium"
+            />
+          </Field>
+          <Field label="Description (optional)">
+            <Input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Additional details..."
+            />
+          </Field>
+          <Field label="Late after (minutes)" hint="Grace period before a check-in is marked late.">
+            <Input
+              type="number"
+              min={0}
+              max={60}
+              value={lateMinutes}
+              onChange={(e) => setLateMinutes(Number(e.target.value))}
             />
           </Field>
           {formError && <Alert tone="error">{formError}</Alert>}

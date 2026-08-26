@@ -139,7 +139,7 @@ create trigger on_auth_user_created
 create table if not exists public.events (
   id         uuid primary key default gen_random_uuid(),
   name       text not null,
-  type       text not null check (type in ('rehearsal', 'game', 'concert')),
+  type       text not null default 'rehearsal',
   date       timestamptz not null,
   end_date   timestamptz,
   all_day    boolean not null default false,
@@ -157,7 +157,17 @@ create table if not exists public.events (
   -- current user). Nullable so an event survives if its creator is later
   -- removed from the roster.
   created_by uuid references public.profiles (id) on delete set null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Enhanced event system
+  event_type text not null default 'rehearsal',
+  attendance_requirement text not null default 'required'
+    check (attendance_requirement in ('required', 'optional', 'none')),
+  event_source text not null default 'manual'
+    check (event_source in ('manual', 'google_calendar')),
+  archived boolean not null default false,
+  late_minutes int not null default 10,
+  reminder_enabled boolean not null default true,
+  reminder_minutes_before int not null default 15
 );
 
 -- Idempotent migration for databases created before Google Calendar sync.
@@ -173,6 +183,22 @@ alter table public.events add column if not exists checkin_mode text not null de
 alter table public.events drop constraint if exists events_checkin_mode_check;
 alter table public.events add constraint events_checkin_mode_check
   check (checkin_mode in ('qr', 'toggle', 'both', 'none'));
+
+-- Idempotent migration for enhanced event system.
+alter table public.events drop constraint if exists events_type_check;
+alter table public.events add column if not exists event_type text not null default 'rehearsal';
+alter table public.events add column if not exists attendance_requirement text not null default 'required';
+alter table public.events drop constraint if exists events_attendance_requirement_check;
+alter table public.events add constraint events_attendance_requirement_check
+  check (attendance_requirement in ('required', 'optional', 'none'));
+alter table public.events add column if not exists event_source text not null default 'manual';
+alter table public.events drop constraint if exists events_event_source_check;
+alter table public.events add constraint events_event_source_check
+  check (event_source in ('manual', 'google_calendar'));
+alter table public.events add column if not exists archived boolean not null default false;
+alter table public.events add column if not exists late_minutes int not null default 10;
+alter table public.events add column if not exists reminder_enabled boolean not null default true;
+alter table public.events add column if not exists reminder_minutes_before int not null default 15;
 
 create index if not exists events_date_idx on public.events (date);
 create index if not exists events_google_calendar_uid_idx
@@ -232,7 +258,14 @@ create table if not exists public.attendance_records (
   student_id   uuid not null references public.profiles (id) on delete cascade,
   attended     boolean not null default false,
   checked_in_at timestamptz,
-  unique (event_id, student_id)
+  unique (event_id, student_id),
+  -- Enhanced attendance statuses
+  status       text not null default 'absent'
+    check (status in ('present', 'absent', 'excused', 'late')),
+  excuse_reason text not null default '',
+  staff_note   text not null default '',
+  is_late      boolean not null default false,
+  marked_by    uuid references public.profiles (id) on delete set null
 );
 
 create index if not exists attendance_records_student_idx on public.attendance_records (student_id);
@@ -708,6 +741,9 @@ declare
   v_record   attendance_records%rowtype;
   v_attempt  uuid;
   v_event_id uuid;
+  v_is_late  boolean := false;
+  v_late_mins int;
+  v_status   text;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
@@ -719,7 +755,8 @@ begin
   end if;
 
   select cs.id, cs.event_id, cs.expires_at,
-         ev.name as event_name, ev.date as event_date, ev.end_date as event_end
+         ev.name as event_name, ev.date as event_date, ev.end_date as event_end,
+         ev.late_minutes
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -760,8 +797,21 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
   end if;
 
-  insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
-  values (v_session.event_id, v_uid, true, now())
+  -- Late detection: check if check-in is after grace period
+  v_late_mins := coalesce(v_session.late_minutes, 10);
+  if v_session.event_date + (v_late_mins || ' minutes')::interval < now() then
+    v_is_late := true;
+    v_status := 'late';
+  else
+    v_status := 'present';
+  end if;
+
+  insert into public.attendance_records (
+    event_id, student_id, attended, checked_in_at, status, is_late
+  )
+  values (
+    v_session.event_id, v_uid, true, now(), v_status, v_is_late
+  )
   on conflict (event_id, student_id)
   do update set attended = true
   returning * into v_record;
@@ -770,10 +820,11 @@ begin
 
   return jsonb_build_object(
     'ok', true,
-    'message', 'Checked in',
+    'message', case when v_is_late then 'Checked in (late)' else 'Checked in' end,
     'event_id', v_session.event_id,
     'event_name', v_session.event_name,
-    'checked_in_at', v_record.checked_in_at
+    'checked_in_at', v_record.checked_in_at,
+    'is_late', v_is_late
   );
 exception
   when others then
@@ -783,8 +834,7 @@ $$;
 
 -- Manual fallback for students whose camera won't start: same validation as
 -- record_attendance (same checkin_sessions token/expiry rules) but keyed off
--- the short entry_code the staff member reads aloud / displays on screen.
-create or replace function public.record_attendance_by_code(p_code text)
+-- the short entry_code the staff member reads aloud / displays on screen.create or replace function public.record_attendance_by_code(p_code text)
 returns jsonb
 language plpgsql
 security definer
@@ -796,10 +846,14 @@ declare
   v_record   attendance_records%rowtype;
   v_attempt  uuid;
   v_event_id uuid;
+  v_is_late  boolean := false;
+  v_late_mins int;
+  v_status   text;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'You are not signed in.');
   end if;
+
 
   -- Directors run the band; they don't check in.
   if public.user_has_role('director') then
@@ -807,7 +861,8 @@ begin
   end if;
 
   select cs.id, cs.event_id, cs.expires_at,
-         ev.name as event_name, ev.date as event_date, ev.end_date as event_end
+         ev.name as event_name, ev.date as event_date, ev.end_date as event_end,
+         ev.late_minutes
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -848,8 +903,21 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
   end if;
 
-  insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
-  values (v_session.event_id, v_uid, true, now())
+  -- Late detection
+  v_late_mins := coalesce(v_session.late_minutes, 10);
+  if v_session.event_date + (v_late_mins || ' minutes')::interval < now() then
+    v_is_late := true;
+    v_status := 'late';
+  else
+    v_status := 'present';
+  end if;
+
+  insert into public.attendance_records (
+    event_id, student_id, attended, checked_in_at, status, is_late
+  )
+  values (
+    v_session.event_id, v_uid, true, now(), v_status, v_is_late
+  )
   on conflict (event_id, student_id)
   do update set attended = true
   returning * into v_record;
@@ -858,10 +926,11 @@ begin
 
   return jsonb_build_object(
     'ok', true,
-    'message', 'Checked in',
+    'message', case when v_is_late then 'Checked in (late)' else 'Checked in' end,
     'event_id', v_session.event_id,
     'event_name', v_session.event_name,
-    'checked_in_at', v_record.checked_in_at
+    'checked_in_at', v_record.checked_in_at,
+    'is_late', v_is_late
   );
 exception
   when others then
@@ -871,10 +940,33 @@ $$;
 
 -- Manual override (staff). Directors may mark anyone; section leaders only
 -- students whose instrument matches their own section.
+-- Legacy boolean signature for backward compatibility
 create or replace function public.override_attendance(
   p_event_id   uuid,
   p_student_id uuid,
   p_attended   boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_attended then
+    return public.override_attendance(p_event_id, p_student_id, 'present', '', '');
+  else
+    return public.override_attendance(p_event_id, p_student_id, 'absent', '', '');
+  end if;
+end;
+$$;
+
+-- Enhanced signature with status, excuse reason, and staff note
+create or replace function public.override_attendance(
+  p_event_id      uuid,
+  p_student_id    uuid,
+  p_status        text default 'present',
+  p_excuse_reason text default '',
+  p_staff_note    text default ''
 )
 returns jsonb
 language plpgsql
@@ -911,14 +1003,42 @@ begin
     return jsonb_build_object('ok', false, 'message', 'Unknown event.');
   end if;
 
-  if p_attended then
-    insert into public.attendance_records (event_id, student_id, attended, checked_in_at)
-    values (p_event_id, p_student_id, true, now())
-    on conflict (event_id, student_id)
-    do update set attended = true, checked_in_at = now();
-  else
+  -- Validate status
+  if p_status not in ('present', 'absent', 'excused', 'late') then
+    return jsonb_build_object('ok', false, 'message', 'Invalid attendance status.');
+  end if;
+
+  if p_status = 'absent' then
     delete from public.attendance_records
      where event_id = p_event_id and student_id = p_student_id;
+  else
+    insert into public.attendance_records (
+      event_id, student_id, attended, checked_in_at, status,
+      excuse_reason, staff_note, is_late, marked_by
+    )
+    values (
+      p_event_id, p_student_id,
+      p_status in ('present', 'late'),
+      case when p_status in ('present', 'late') then now() else null end,
+      p_status,
+      p_excuse_reason,
+      p_staff_note,
+      p_status = 'late',
+      v_uid
+    )
+    on conflict (event_id, student_id)
+    do update set
+      attended = excluded.attended,
+      checked_in_at = case
+        when excluded.status in ('present', 'late') and attendance_records.checked_in_at is null
+        then now()
+        else attendance_records.checked_in_at
+      end,
+      status = excluded.status,
+      excuse_reason = excluded.excuse_reason,
+      staff_note = excluded.staff_note,
+      is_late = excluded.is_late,
+      marked_by = excluded.marked_by;
   end if;
 
   return jsonb_build_object('ok', true);
@@ -1373,7 +1493,7 @@ grant execute on function public.validate_band_join_code(text) to anon, authenti
 -- and delete synced events that disappeared from the feed.
 create or replace function public.sync_google_calendar_events(
   p_events jsonb,
-  p_replace_all boolean default true
+  p_replace_all boolean default false
 )
 returns jsonb
 language plpgsql
@@ -1385,15 +1505,36 @@ declare
   v_seen text[] := '{}';
   v_inserted int := 0;
   v_updated int := 0;
-  v_deleted int := 0;
+  v_archived int := 0;
   v_deleted_now int := 0;
   v_existing uuid;
 begin
   perform set_config('app.suppress_event_notifications', 'true', true);
 
+  -- SAFETY: Never delete manual events. When p_replace_all is true,
+  -- archive (don't delete) Google Calendar events that have attendance records.
+  -- Manual events (google_calendar_uid IS NULL) are NEVER touched by sync.
   if p_replace_all then
-    delete from public.events where google_calendar_uid is null;
-    get diagnostics v_deleted = row_count;
+    -- Archive Google Calendar events that have attendance records
+    update public.events
+    set archived = true
+    where google_calendar_uid is not null
+      and archived = false
+      and exists (
+        select 1 from public.attendance_records ar
+        where ar.event_id = events.id
+      );
+    get diagnostics v_archived = row_count;
+
+    -- Delete Google Calendar events WITHOUT attendance records
+    -- (safe to remove — no historical data loss)
+    delete from public.events
+    where google_calendar_uid is not null
+      and not exists (
+        select 1 from public.attendance_records ar
+        where ar.event_id = events.id
+      );
+    get diagnostics v_deleted_now = row_count;
   end if;
 
   for v_event in select * from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) loop
@@ -1417,7 +1558,8 @@ begin
       google_calendar_uid,
       google_calendar_updated_at,
       google_calendar_synced_at,
-      created_by
+      created_by,
+      event_source
     ) values (
       coalesce(nullif(v_event ->> 'name', ''), 'Untitled event'),
       coalesce(nullif(v_event ->> 'type', ''), 'rehearsal'),
@@ -1429,7 +1571,8 @@ begin
       v_event ->> 'uid',
       nullif(v_event ->> 'updated_at', '')::timestamptz,
       now(),
-      null
+      null,
+      'google_calendar'
     )
     on conflict (google_calendar_uid) do update set
       name = excluded.name,
@@ -1449,17 +1592,23 @@ begin
     end if;
   end loop;
 
-  delete from public.events
-   where google_calendar_uid is not null
-     and not (google_calendar_uid = any(v_seen));
+  -- Archive Google Calendar events that disappeared from the feed
+  -- (don't delete — preserve historical attendance)
+  update public.events
+  set archived = true
+  where google_calendar_uid is not null
+    and not (google_calendar_uid = any(v_seen))
+    and archived = false;
+
   get diagnostics v_deleted_now = row_count;
-  v_deleted := v_deleted + v_deleted_now;
+  v_archived := v_archived + v_deleted_now;
 
   return jsonb_build_object(
     'ok', true,
     'inserted', v_inserted,
     'updated', v_updated,
-    'deleted', v_deleted,
+    'archived', v_archived,
+    'deleted', 0,
     'seen', coalesce(array_length(v_seen, 1), 0)
   );
 exception
@@ -1553,5 +1702,217 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.notifications;
+exception when others then null;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- 11. Practice log table
+-- ---------------------------------------------------------------------------
+create table if not exists public.practice_logs (
+  id          uuid primary key default gen_random_uuid(),
+  owner_id    uuid not null references public.profiles (id) on delete cascade,
+  instrument  text not null default '',
+  date        date not null default current_date,
+  duration_minutes int not null default 0 check (duration_minutes > 0 and duration_minutes <= 480),
+  notes       text not null default '',
+  category    text not null default '',
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists practice_logs_owner_idx
+  on public.practice_logs (owner_id, date desc);
+
+alter table public.practice_logs enable row level security;
+
+drop policy if exists "practice_logs_own_all" on public.practice_logs;
+create policy "practice_logs_own_all"
+  on public.practice_logs for all
+  to authenticated
+  using (owner_id = auth.uid())
+  with check (owner_id = auth.uid());
+
+drop policy if exists "practice_logs_director_read" on public.practice_logs;
+create policy "practice_logs_director_read"
+  on public.practice_logs for select
+  to authenticated
+  using (public.user_has_role('director'));
+
+-- ---------------------------------------------------------------------------
+-- 12. Attendance reminders tracking (avoid duplicate sends)
+-- ---------------------------------------------------------------------------
+create table if not exists public.attendance_reminders (
+  id          uuid primary key default gen_random_uuid(),
+  event_id    uuid not null references public.events (id) on delete cascade,
+  student_id  uuid not null references public.profiles (id) on delete cascade,
+  sent_at     timestamptz not null default now(),
+  unique (event_id, student_id)
+);
+
+alter table public.attendance_reminders enable row level security;
+-- RPC-only (service_role), no client policies needed
+
+-- ---------------------------------------------------------------------------
+-- 13. Analytics RPCs
+-- ---------------------------------------------------------------------------
+
+-- Student attendance percentage (handles excused properly)
+create or replace function public.get_student_attendance_pct(p_student_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'ok', true,
+    'percentage', coalesce(
+      round(
+        (select count(*)::numeric from public.attendance_records ar
+         join public.events e on e.id = ar.event_id
+         where ar.student_id = p_student_id
+           and ar.attended = true
+           and e.archived = false
+           and e.attendance_requirement = 'required'
+        ) /
+        nullif(
+          (select count(*)::numeric from public.events e
+           where e.archived = false
+             and e.attendance_requirement = 'required'
+             and e.date < now()
+             and not exists (
+               select 1 from public.attendance_records ar2
+               where ar2.event_id = e.id
+                 and ar2.student_id = p_student_id
+                 and ar2.status = 'excused'
+             )
+          ), 0
+        ) * 100, 0
+      ), 0
+    )
+  );
+$$;
+
+-- Section attendance stats
+create or replace function public.get_section_attendance_stats()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with section_stats as (
+    select
+      p.instrument as section,
+      count(distinct p.id) as member_count,
+      round(avg(
+        case
+          when required_events.cnt > 0 then
+            (attended_count.ac::numeric / required_events.cnt) * 100
+          else 0
+        end
+      ), 1) as avg_attendance_pct
+    from public.profiles p
+    left join lateral (
+      select count(*)::int as ac
+      from public.attendance_records ar
+      join public.events e on e.id = ar.event_id
+      where ar.student_id = p.id
+        and ar.attended = true
+        and e.archived = false
+        and e.attendance_requirement = 'required'
+    ) attended_count on true
+    left join lateral (
+      select count(*)::int as cnt
+      from public.events e
+      where e.archived = false
+        and e.attendance_requirement = 'required'
+        and e.date < now()
+    ) required_events on true
+    where p.instrument <> ''
+      and not (p.roles @> '{director}'::public.app_role[])
+      and p.deactivated = false
+    group by p.instrument
+    order by p.instrument
+  )
+  select jsonb_agg(row_to_json(s)) from section_stats s;
+$$;
+
+-- Event attendance summary
+create or replace function public.get_event_attendance_summary(p_event_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with stats as (
+    select
+      count(*) filter (where status = 'present') as present_count,
+      count(*) filter (where status = 'late') as late_count,
+      count(*) filter (where status = 'excused') as excused_count,
+      count(*) filter (where status = 'absent' or status is null) as absent_count
+    from public.attendance_records ar
+    where ar.event_id = p_event_id
+  ),
+  roster as (
+    select count(*)::int as total
+    from public.profiles p
+    where not (p.roles @> '{director}'::public.app_role[])
+      and p.deactivated = false
+  )
+  select jsonb_build_object(
+    'ok', true,
+    'present', (select present_count from stats),
+    'late', (select late_count from stats),
+    'excused', (select excused_count from stats),
+    'absent', (select absent_count from stats),
+    'total', (select total from roster)
+  );
+$$;
+
+-- Attendance trend (last N required events)
+create or replace function public.get_attendance_trend(p_limit int default 10)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with recent_events as (
+    select e.id, e.name, e.type, e.date, e.event_type
+    from public.events e
+    where e.archived = false
+      and e.attendance_requirement = 'required'
+      and e.date < now()
+    order by e.date desc
+    limit p_limit
+  ),
+  event_stats as (
+    select
+      re.id, re.name, re.type, re.date, re.event_type,
+      (select count(*) from public.profiles p
+       where not (p.roles @> '{director}'::public.app_role[]) and p.deactivated = false) as roster_size,
+      (select count(*) from public.attendance_records ar
+       where ar.event_id = re.id and ar.attended = true) as present_count,
+      (select count(*) from public.attendance_records ar
+       where ar.event_id = re.id and ar.status = 'excused') as excused_count,
+      (select count(*) from public.attendance_records ar
+       where ar.event_id = re.id and ar.status = 'late') as late_count
+    from recent_events re
+  )
+  select jsonb_agg(row_to_json(es)) from event_stats es;
+$$;
+
+-- Grant analytics RPCs
+grant execute on function public.get_student_attendance_pct(uuid) to authenticated;
+grant execute on function public.get_section_attendance_stats() to authenticated;
+grant execute on function public.get_event_attendance_summary(uuid) to authenticated;
+grant execute on function public.get_attendance_trend(int) to authenticated;
+grant execute on function public.override_attendance(uuid, uuid, text, text, text) to authenticated;
+
+-- Realtime for practice logs
+do $$
+begin
+  alter publication supabase_realtime add table public.practice_logs;
 exception when others then null;
 end $$;

@@ -15,16 +15,31 @@ export const recordAttendance = (token: string) =>
 export const recordAttendanceByCode = (code: string) =>
   callRpc("record_attendance_by_code", { p_code: code });
 
+/** Override attendance with status, excuse reason, and staff note. */
 export const overrideAttendance = (
   eventId: string,
   studentId: string,
-  attended: boolean
-) =>
-  callRpc("override_attendance", {
+  attended: boolean | string,
+  excuseReason?: string,
+  staffNote?: string
+) => {
+  if (typeof attended === "boolean") {
+    // Legacy boolean call
+    return callRpc("override_attendance", {
+      p_event_id: eventId,
+      p_student_id: studentId,
+      p_attended: attended,
+    });
+  }
+  // New status-based call
+  return callRpc("override_attendance", {
     p_event_id: eventId,
     p_student_id: studentId,
-    p_attended: attended,
+    p_status: attended,
+    p_excuse_reason: excuseReason ?? "",
+    p_staff_note: staffNote ?? "",
   });
+};
 
 export const inviteMember = (
   email: string,
@@ -63,3 +78,21 @@ export const deactivateMember = (memberId: string) =>
 
 export const reactivateMember = (memberId: string) =>
   callRpc("reactivate_member", { p_member_id: memberId });
+
+// --- Analytics RPCs ---
+
+/** Get student attendance percentage (handles excused properly). */
+export const getStudentAttendancePct = (studentId: string) =>
+  callRpc("get_student_attendance_pct", { p_student_id: studentId });
+
+/** Get section attendance statistics. */
+export const getSectionAttendanceStats = () =>
+  callRpc("get_section_attendance_stats", {});
+
+/** Get event attendance summary. */
+export const getEventAttendanceSummary = (eventId: string) =>
+  callRpc("get_event_attendance_summary", { p_event_id: eventId });
+
+/** Get attendance trend (last N required events). */
+export const getAttendanceTrend = (limit: number = 10) =>
+  callRpc("get_attendance_trend", { p_limit: limit });

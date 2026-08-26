@@ -37,7 +37,7 @@ const corsHeaders = {
 type ImportedEvent = {
   uid: string;
   name: string;
-  type: "rehearsal" | "game" | "concert";
+  type: string;
   date: string;
   end_date: string | null;
   all_day: boolean;
@@ -155,11 +155,19 @@ function parseIcsDate(line: { params: Record<string, string>; value: string }, d
   };
 }
 
-function inferType(summary: string): ImportedEvent["type"] {
+function inferType(summary: string): string {
   const s = summary.toLowerCase();
-  if (/concert|festival|performance|show|winterfest|ensemble/.test(s)) return "concert";
-  if (/game|football|basketball|pep band|mustang band jam/.test(s)) return "game";
-  return "rehearsal";
+  if (/concert|festival|performance|show|winterfest|ensemble/.test(s)) return "Concert";
+  if (/game|football|basketball|pep band|mustang band jam/.test(s)) return "Game";
+  if (/competition|contest|regionals|state/.test(s)) return "Competition";
+  if (/section meeting|sectionals/.test(s)) return "Section Meeting";
+  if (/band meeting|leadership/.test(s)) return "Band Meeting";
+  if (/parent|booster/.test(s)) return "Parent Meeting";
+  if (/fundrais|cookie|car wash/.test(s)) return "Fundraiser";
+  if (/trip|travel|bus/.test(s)) return "Trip";
+  if (/workshop|masterclass|clinic/.test(s)) return "Workshop";
+  if (/audition/.test(s)) return "Audition";
+  return "Rehearsal";
 }
 
 function parseEvents(icsText: string): ImportedEvent[] {

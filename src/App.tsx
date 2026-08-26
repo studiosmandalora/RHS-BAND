@@ -1,10 +1,12 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import AppShell from "./components/AppShell";
 import { isSupabaseConfigured } from "./lib/supabase";
+import AnalyticsScreen from "./screens/AnalyticsScreen";
 import AttendanceScreen from "./screens/AttendanceScreen";
 import CalendarScreen from "./screens/CalendarScreen";
 import CheckInScreen from "./screens/CheckInScreen";
 import NeedsSetup from "./screens/NeedsSetup";
+import PracticeLogScreen from "./screens/PracticeLogScreen";
 import ProfileScreen from "./screens/ProfileScreen";
 import RosterScreen from "./screens/RosterScreen";
 import UpdatePasswordScreen from "./screens/UpdatePasswordScreen";
@@ -23,6 +25,8 @@ export default function App() {
         <Route path="checkin" element={<CheckInScreen />} />
         <Route path="attendance" element={<AttendanceScreen />} />
         <Route path="roster" element={<RosterScreen />} />
+        <Route path="analytics" element={<AnalyticsScreen />} />
+        <Route path="practice" element={<PracticeLogScreen />} />
         <Route path="profile" element={<ProfileScreen />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
