@@ -84,7 +84,14 @@ export default function RosterScreen() {
       .from("profiles")
       .select("*")
       .order("display_name");
-    setMembers((data as Profile[]) ?? []);
+    let rows = (data as Profile[]) ?? [];
+    // Section leaders only see their own section.
+    if (isSectionLeader && !isDirector && profile.instrument) {
+      rows = rows.filter(
+        (r) => r.instrument === profile.instrument || r.id === profile.id
+      );
+    }
+    setMembers(rows);
   }
 
   useEffect(() => {
@@ -317,17 +324,9 @@ export default function RosterScreen() {
       ) : (
         <div className="space-y-2">
           {members.map((m) => {
-            // Directors can manage everyone except other directors. Section
-            // leaders can change the instrument of any student — never roles,
-            // passwords, deactivation, or deletion.
+            // Directors can manage everyone except other directors.
+            // Section leaders have read-only access to their section.
             const editable = isDirector && !m.roles.includes("director");
-            const canEditInstrument =
-              editable ||
-              (isSectionLeader &&
-                m.roles.includes("student") &&
-                !m.roles.includes("director") &&
-                !m.roles.includes("section_leader") &&
-                m.id !== profile.id);
             return (
               <Card
                 key={m.id}
@@ -416,60 +415,56 @@ export default function RosterScreen() {
                   )}
                 </div>
 
-                {(editable || canEditInstrument) && (
+                {editable && (
                   <div className="mt-3 grid grid-cols-2 gap-2">
-                    {canEditInstrument && (
-                      <Field label="Instrument">
-                        <Select
-                          value={m.instrument}
-                          onChange={(e) => void changeInstrument(m, e.target.value)}
-                          className="!min-h-9 text-xs"
-                        >
-                          <option value="">—</option>
-                          {INSTRUMENTS.map((i) => (
-                            <option key={i} value={i}>
-                              {i}
-                            </option>
-                          ))}
-                        </Select>
-                      </Field>
-                    )}
-                    {editable && (
-                      <Field label="Roles — tap to toggle (a person can hold several)">
-                        <div className="flex flex-wrap gap-1.5">
-                          {(
-                            [
-                              "student",
-                              "section_leader",
-                              "secretary",
-                            ] as Role[]
-                          ).map((role) => {
-                            const active = m.roles.includes(role);
-                            return (
-                              <button
-                                key={role}
-                                type="button"
-                                onClick={() => void toggleRole(m, role)}
-                                className={
-                                  "rounded-full px-3 py-1.5 text-xs font-bold transition-colors " +
-                                  (active
-                                    ? ROLE_CHIP[role]
-                                    : "bg-zinc-100 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-600 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-300")
-                                }
-                                aria-pressed={active}
-                              >
-                                {ROLE_LABEL[role]}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <p className="mt-1 text-[11px] text-zinc-400">
-                          Everyone keeps at least one role. Directors manage
-                          roles, section leaders can change any student's
-                          instrument.
-                        </p>
-                      </Field>
-                    )}
+                    <Field label="Instrument">
+                      <Select
+                        value={m.instrument}
+                        onChange={(e) => void changeInstrument(m, e.target.value)}
+                        className="!min-h-9 text-xs"
+                      >
+                        <option value="">—</option>
+                        {INSTRUMENTS.map((i) => (
+                          <option key={i} value={i}>
+                            {i}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field label="Roles — tap to toggle (a person can hold several)">
+                      <div className="flex flex-wrap gap-1.5">
+                        {(
+                          [
+                            "student",
+                            "section_leader",
+                            "secretary",
+                          ] as Role[]
+                        ).map((role) => {
+                          const active = m.roles.includes(role);
+                          return (
+                            <button
+                              key={role}
+                              type="button"
+                              onClick={() => void toggleRole(m, role)}
+                              className={
+                                "rounded-full px-3 py-1.5 text-xs font-bold transition-colors " +
+                                (active
+                                  ? ROLE_CHIP[role]
+                                  : "bg-zinc-100 text-zinc-400 hover:bg-zinc-200 hover:text-zinc-600 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-300")
+                              }
+                              aria-pressed={active}
+                            >
+                              {ROLE_LABEL[role]}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-1 text-[11px] text-zinc-400">
+                        Everyone keeps at least one role. Directors manage
+                        roles and instruments. Students change their own
+                        instrument in their profile.
+                      </p>
+                    </Field>
                   </div>
                 )}
               </Card>

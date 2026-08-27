@@ -1396,9 +1396,8 @@ end;
 $$;
 
 -- Change a member's instrument/section. Directors may change anyone's
--- (except other directors); section leaders may only change members whose
--- instrument already matches their own (i.e. their own section) — they cannot
--- move members between sections or touch other sections.
+-- (except other directors). Section leaders may NOT change instruments —
+-- students change their own instrument via the Profile screen.
 create or replace function public.update_member_instrument(
   p_member_id uuid,
   p_instrument text
@@ -1414,28 +1413,14 @@ begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
   end if;
-  if public.user_has_role('director') then
-    if not exists (select 1 from public.profiles where id = p_member_id) then
-      return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
-    end if;
-    if (select roles from public.profiles where id = p_member_id) @> '{director}'::public.app_role[] then
-      return jsonb_build_object('ok', false, 'message', 'Directors cannot change another director''s instrument.');
-    end if;
-  elsif public.user_has_role('section_leader') then
-    -- Section leaders: the member must be a student (not another staff member)
-    -- and not themselves or another director.
-    if not exists (
-      select 1 from public.profiles s
-      where s.id = p_member_id
-        and s.id <> v_uid
-        and s.roles @> '{student}'::public.app_role[]
-        and not (s.roles @> '{director}'::public.app_role[])
-        and not (s.roles @> '{section_leader}'::public.app_role[])
-    ) then
-      return jsonb_build_object('ok', false, 'message', 'Section leaders can only change instruments of students.');
-    end if;
-  else
-    return jsonb_build_object('ok', false, 'message', 'Only staff may change instruments.');
+  if not public.user_has_role('director') then
+    return jsonb_build_object('ok', false, 'message', 'Only directors can change instruments.');
+  end if;
+  if not exists (select 1 from public.profiles where id = p_member_id) then
+    return jsonb_build_object('ok', false, 'message', 'That member is not on the roster.');
+  end if;
+  if (select roles from public.profiles where id = p_member_id) @> '{director}'::public.app_role[] then
+    return jsonb_build_object('ok', false, 'message', 'Directors cannot change another director''s instrument.');
   end if;
 
   update public.profiles set instrument = p_instrument where id = p_member_id;
