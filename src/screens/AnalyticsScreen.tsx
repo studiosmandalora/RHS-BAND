@@ -4,6 +4,11 @@ import {
   BarChart3,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import {
+  getCachedEvents,
+  setCachedEvents,
+  isEventsStale,
+} from "../lib/eventCache";
 import type { AttendanceRow, EventRow, Profile } from "../lib/types";
 import { endOfDay, relativeDay } from "../lib/date";
 import {
@@ -48,12 +53,22 @@ export default function AnalyticsScreen() {
 
   async function loadData() {
     setLoading(true);
+
+    // Use cached events for instant display
+    const cached = getCachedEvents();
+    if (cached.length > 0) setEvents(cached);
+
     const [ev, pr, rec] = await Promise.all([
-      supabase.from("events").select("*").order("date", { ascending: true }),
+      isEventsStale()
+        ? supabase.from("events").select("*").order("date", { ascending: true })
+        : Promise.resolve({ data: null }),
       supabase.from("profiles").select("*").order("display_name"),
       supabase.from("attendance_records").select("*"),
     ]);
-    setEvents((ev.data as EventRow[]) ?? []);
+    if (ev.data) {
+      setEvents(ev.data as EventRow[]);
+      setCachedEvents(ev.data as EventRow[]);
+    }
     setProfiles((pr.data as Profile[]) ?? []);
     setRecords((rec.data as AttendanceRow[]) ?? []);
 

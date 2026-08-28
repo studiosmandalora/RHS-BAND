@@ -18,6 +18,16 @@ import {
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
+import {
+  getCachedEvents,
+  setCachedEvents,
+  isEventsStale,
+  getCachedPersonalEvents,
+  setCachedPersonalEvents,
+  isPersonalStale,
+  invalidateEventsCache,
+  invalidatePersonalCache,
+} from "../lib/eventCache";
 import type {
   AttendanceRequirement,
   CheckinMode,
@@ -268,9 +278,11 @@ export default function CalendarScreen() {
     new Date(now.getFullYear(), now.getMonth(), 1)
   );
   const [selected, setSelected] = useState<Date>(startOfDay(now));
-  const [events, setEvents] = useState<EventRow[]>([]);
-  const [personalEvents, setPersonalEvents] = useState<PersonalEventRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [events, setEvents] = useState<EventRow[]>(() => getCachedEvents());
+  const [personalEvents, setPersonalEvents] = useState<PersonalEventRow[]>(
+    () => getCachedPersonalEvents(profile.id)
+  );
+  const [loading, setLoading] = useState(false);
   const [showEventForm, setShowEventForm] = useState(false);
   const [editingEvent, setEditingEvent] = useState<EventRow | null>(null);
 
@@ -306,24 +318,41 @@ export default function CalendarScreen() {
     text: string;
   } | null>(null);
 
-  async function loadEvents() {
-    setLoading(true);
-    await syncGoogleCalendarEvents();
+  async function loadEvents(showSpinner = false) {
+    if (showSpinner) setLoading(true);
+    const needBand = isEventsStale();
+    const needPersonal = isPersonalStale(profile.id);
+
+    // Only sync Google Calendar when band events are stale
+    if (needBand) await syncGoogleCalendarEvents();
+
     const [band, personal] = await Promise.all([
-      supabase.from("events").select("*").order("date", { ascending: true }),
-      supabase
-        .from("personal_events")
-        .select("*")
-        .eq("owner_id", profile.id)
-        .order("date", { ascending: true }),
+      needBand
+        ? supabase.from("events").select("*").order("date", { ascending: true })
+        : Promise.resolve({ data: null }),
+      needPersonal
+        ? supabase
+            .from("personal_events")
+            .select("*")
+            .eq("owner_id", profile.id)
+            .order("date", { ascending: true })
+        : Promise.resolve({ data: null }),
     ]);
-    setEvents((band.data as EventRow[]) ?? []);
-    setPersonalEvents((personal.data as PersonalEventRow[]) ?? []);
+
+    if (band.data) {
+      setEvents(band.data);
+      setCachedEvents(band.data);
+    }
+    if (personal.data) {
+      setPersonalEvents(personal.data);
+      setCachedPersonalEvents(profile.id, personal.data);
+    }
     setLoading(false);
   }
 
   useEffect(() => {
-    void loadEvents();
+    // Load immediately from cache (instant); refresh in background if stale.
+    void loadEvents(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile.id]);
 
@@ -408,7 +437,10 @@ export default function CalendarScreen() {
     setShowEventForm(false);
     setEditingEvent(null);
     resetForm();
-    void loadEvents();
+    // Force refresh after mutation
+    invalidateEventsCache();
+    invalidatePersonalCache(profile.id);
+    void loadEvents(false);
   }
 
   function resetForm() {
@@ -467,7 +499,8 @@ export default function CalendarScreen() {
       setActionError(error.message);
       return;
     }
-    void loadEvents();
+    invalidateEventsCache();
+    void loadEvents(false);
   }
 
   /** Director: archive an event instead of deleting it. */
@@ -482,7 +515,8 @@ export default function CalendarScreen() {
       setActionError(error.message);
       return;
     }
-    void loadEvents();
+    invalidateEventsCache();
+    void loadEvents(false);
   }
 
   function openAdd() {
@@ -565,7 +599,8 @@ export default function CalendarScreen() {
     setPName("");
     setPDate("");
     setPLocation("");
-    void loadEvents();
+    invalidatePersonalCache(profile.id);
+    void loadEvents(false);
   }
 
   async function deletePersonal(ev: PersonalEventRow) {
@@ -581,7 +616,10 @@ export default function CalendarScreen() {
       .delete()
       .eq("id", ev.id);
     setDeletingPersonalId(null);
-    if (!error) void loadEvents();
+    if (!error) {
+      invalidatePersonalCache(profile.id);
+      void loadEvents(false);
+    }
   }
 
   return (

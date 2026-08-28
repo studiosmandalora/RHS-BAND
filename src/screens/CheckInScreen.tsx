@@ -25,6 +25,11 @@ import {
 import { supabase } from "../lib/supabase";
 import { syncGoogleCalendarEvents } from "../lib/calendarSync";
 import {
+  getCachedEvents,
+  setCachedEvents,
+  isEventsStale,
+} from "../lib/eventCache";
+import {
   overrideAttendance,
   recordAttendance,
   recordAttendanceByCode,
@@ -36,7 +41,7 @@ import type {
   EventRow,
   Profile,
 } from "../lib/types";
-import { fmtTime, parseTokenFromString, startOfDay } from "../lib/date";
+import { fmtTime, parseTokenFromString } from "../lib/date";
 import {
   EXCUSE_REASONS,
   getEventTypeChip,
@@ -113,29 +118,52 @@ export default function CheckInScreen() {
   /* ------------------------- upcoming events ----------------------------- */
   useEffect(() => {
     let cancelled = false;
-    void syncGoogleCalendarEvents().finally(() => {
-      supabase
-        .from("events")
-        .select("*")
-        .gte("date", startOfDay(new Date()).toISOString())
-        .order("date", { ascending: true })
-        .limit(20)
-        .then(({ data }) => {
-          if (cancelled) return;
-          const rows = ((data as EventRow[]) ?? []).filter((e) => {
-            if (e.archived) return false;
-            const end = e.end_date
-              ? new Date(e.end_date).getTime()
-              : new Date(e.date).getTime() + 24 * 60 * 60 * 1000;
-            return end > Date.now();
+
+    function filterUpcoming(allEvents: EventRow[]): EventRow[] {
+      return allEvents
+        .filter((e) => {
+          if (e.archived) return false;
+          const end = e.end_date
+            ? new Date(e.end_date).getTime()
+            : new Date(e.date).getTime() + 24 * 60 * 60 * 1000;
+          return end > Date.now();
+        })
+        .sort((a, b) => +new Date(a.date) - +new Date(b.date))
+        .slice(0, 20);
+    }
+
+    // Show cached data immediately
+    const cached = getCachedEvents();
+    if (cached.length > 0) {
+      const rows = filterUpcoming(cached);
+      setUpcomingEvents(rows);
+      setSelectedEvent((prev) => {
+        if (prev && rows.some((e) => e.id === prev.id)) return prev;
+        return rows[0] ?? null;
+      });
+    }
+
+    // Refresh in background if stale
+    if (isEventsStale()) {
+      void syncGoogleCalendarEvents().finally(() => {
+        supabase
+          .from("events")
+          .select("*")
+          .order("date", { ascending: true })
+          .then(({ data }) => {
+            if (cancelled) return;
+            const allRows = (data as EventRow[]) ?? [];
+            setCachedEvents(allRows);
+            const rows = filterUpcoming(allRows);
+            setUpcomingEvents(rows);
+            setSelectedEvent((prev) => {
+              if (prev && rows.some((e) => e.id === prev.id)) return prev;
+              return rows[0] ?? null;
+            });
           });
-          setUpcomingEvents(rows);
-          setSelectedEvent((prev) => {
-            if (prev && rows.some((e) => e.id === prev.id)) return prev;
-            return rows[0] ?? null;
-          });
-        });
-    });
+      });
+    }
+
     return () => {
       cancelled = true;
     };
