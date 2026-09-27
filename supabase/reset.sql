@@ -14,6 +14,7 @@
 -- the director's profiles row if needed.
 -- ============================================================================
 
+drop table if exists public.attendance_staff_notes cascade;
 drop table if exists public.attendance_records cascade;
 drop table if exists public.checkin_sessions cascade;
 drop table if exists public.personal_events cascade;

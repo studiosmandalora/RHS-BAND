@@ -36,6 +36,30 @@ import {
 import { Avatar } from "../components/Avatar";
 import { ProgressRing } from "../components/ProgressRing";
 
+type AttendanceHistoryRow = AttendanceRow & { staff_note?: string };
+type AttendanceRowWithStaffNote = AttendanceRow & {
+  staff_note_data: { staff_note: string } | null;
+};
+
+async function loadAttendanceRecords(
+  includeStaffNotes: boolean
+): Promise<AttendanceHistoryRow[]> {
+  if (includeStaffNotes) {
+    const { data } = await supabase
+      .from("attendance_records")
+      .select("*, staff_note_data:attendance_staff_notes(staff_note)");
+    return ((data as unknown as AttendanceRowWithStaffNote[] | null) ?? []).map(
+      ({ staff_note_data, ...record }) => ({
+        ...record,
+        staff_note: staff_note_data?.staff_note ?? "",
+      })
+    );
+  }
+
+  const { data } = await supabase.from("attendance_records").select("*");
+  return (data as AttendanceRow[] | null) ?? [];
+}
+
 export default function AttendanceScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isStaff =
@@ -46,7 +70,7 @@ export default function AttendanceScreen() {
 
   const [events, setEvents] = useState<EventRow[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [records, setRecords] = useState<AttendanceRow[]>([]);
+  const [records, setRecords] = useState<AttendanceHistoryRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(
     profile.roles.includes("director") ? null : profile.id
   );
@@ -74,16 +98,16 @@ export default function AttendanceScreen() {
         ? supabase.from("events").select("*").order("date", { ascending: true })
         : Promise.resolve({ data: null }),
       supabase.from("profiles").select("*").order("display_name"),
-      supabase.from("attendance_records").select("*"),
+      loadAttendanceRecords(isStaff),
     ]).then(([ev, pr, rec]) => {
       if (ev.data) {
         setEvents(ev.data as EventRow[]);
         setCachedEvents(ev.data as EventRow[]);
       }
       setProfiles((pr.data as Profile[]) ?? []);
-      setRecords((rec.data as AttendanceRow[]) ?? []);
+      setRecords(rec);
     });
-  }, []);
+  }, [isStaff]);
 
   // Only required events that have already ended
   const pastEvents = useMemo(
@@ -161,8 +185,7 @@ export default function AttendanceScreen() {
       return;
     }
     // Refresh records
-    const { data } = await supabase.from("attendance_records").select("*");
-    setRecords((data as AttendanceRow[]) ?? []);
+    setRecords(await loadAttendanceRecords(isStaff));
     setExcusedModal(null);
     setExcuseReason("Sick");
     setExcuseNote("");
@@ -189,10 +212,9 @@ export default function AttendanceScreen() {
               checked_in_at: new Date().toISOString(),
               status: "present" as const,
               excuse_reason: "",
-              staff_note: "",
               is_late: false,
               marked_by: null,
-            } as AttendanceRow,
+            } as AttendanceHistoryRow,
           ]
         : prev.filter(
             (r) => !(r.event_id === eventId && r.student_id === memberId)
@@ -205,8 +227,7 @@ export default function AttendanceScreen() {
     );
     if (error || !result?.ok) {
       setError(error?.message ?? result?.message ?? "Override failed.");
-      const { data } = await supabase.from("attendance_records").select("*");
-      setRecords((data as AttendanceRow[]) ?? []);
+      setRecords(await loadAttendanceRecords(isStaff));
     }
   }
 
@@ -433,6 +454,7 @@ export default function AttendanceScreen() {
                       event={event}
                       record={rec}
                       editable
+                      showStaffNote={selectedId !== profile.id}
                       onToggle={() =>
                         void toggle(selectedId, event.id, rec?.attended ?? false)
                       }
@@ -494,12 +516,14 @@ function HistoryRow({
   event,
   record,
   editable,
+  showStaffNote = false,
   onToggle,
   onExcuse,
 }: {
   event: EventRow;
-  record?: AttendanceRow;
+  record?: AttendanceHistoryRow;
   editable: boolean;
+  showStaffNote?: boolean;
   onToggle?: () => void;
   onExcuse?: () => void;
 }) {
@@ -560,7 +584,7 @@ function HistoryRow({
               Excused: {record.excuse_reason}
             </p>
           )}
-          {record?.staff_note && (
+          {showStaffNote && record?.staff_note && (
             <p className="mt-0.5 text-[11px] text-zinc-400 italic">
               Note: {record.staff_note}
             </p>

@@ -1,0 +1,1 @@
+{"query": "select (select count(*) from public.attendance_records) as records, (select count(*) from public.attendance_staff_notes) as notes, (select count(*) from public.events) as events;"}

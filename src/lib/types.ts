@@ -72,9 +72,15 @@ export interface AttendanceRow {
   // Enhanced attendance fields
   status: AttendanceStatus;
   excuse_reason: string;
-  staff_note: string;
   is_late: boolean;
   marked_by: string | null;
+}
+
+export interface AttendanceStaffNoteRow {
+  attendance_record_id: string;
+  staff_note: string;
+  created_by: string | null;
+  updated_at: string;
 }
 
 export interface PersonalEventRow {

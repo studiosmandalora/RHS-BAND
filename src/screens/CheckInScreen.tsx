@@ -360,7 +360,6 @@ export default function CheckInScreen() {
               checked_in_at: new Date().toISOString(),
               status: "present" as const,
               excuse_reason: "",
-              staff_note: "",
               is_late: false,
               marked_by: null,
             } as AttendanceRow,

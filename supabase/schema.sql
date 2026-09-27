@@ -263,13 +263,23 @@ create table if not exists public.attendance_records (
   status       text not null default 'absent'
     check (status in ('present', 'absent', 'excused', 'late')),
   excuse_reason text not null default '',
-  staff_note   text not null default '',
   is_late      boolean not null default false,
   marked_by    uuid references public.profiles (id) on delete set null
 );
 
 create index if not exists attendance_records_student_idx on public.attendance_records (student_id);
 create index if not exists attendance_records_event_idx on public.attendance_records (event_id);
+
+-- Internal notes are stored separately so students can never read them from
+-- their attendance row. RLS below limits note reads to staff, excluding the
+-- student the note belongs to.
+create table if not exists public.attendance_staff_notes (
+  attendance_record_id uuid primary key
+    references public.attendance_records (id) on delete cascade,
+  staff_note text not null,
+  created_by uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now()
+);
 
 -- ---------------------------------------------------------------------------
 -- 4b. Check-in attempt log (rate limiting)
@@ -432,6 +442,7 @@ alter table public.profiles enable row level security;
 alter table public.events enable row level security;
 alter table public.checkin_sessions enable row level security;
 alter table public.attendance_records enable row level security;
+alter table public.attendance_staff_notes enable row level security;
 
 -- profiles ------------------------------------------------------------------
 -- Everyone signed in may read the roster (needed for member names, avatars,
@@ -534,6 +545,25 @@ create policy "attendance_read_self_staff"
       )
     )
   );
+
+drop policy if exists "attendance_staff_notes_read_staff" on public.attendance_staff_notes;
+create policy "attendance_staff_notes_read_staff"
+  on public.attendance_staff_notes for select
+  to authenticated
+  using (
+    exists (
+      select 1 from public.attendance_records ar
+      where ar.id = attendance_record_id
+        and ar.student_id <> auth.uid()
+    )
+    and (
+      public.user_has_role('director')
+      or public.user_has_role('secretary')
+      or public.user_has_role('section_leader')
+    )
+  );
+-- No client write policies: notes are written only by override_attendance().
+grant select on public.attendance_staff_notes to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 7. App settings — band join code
@@ -975,7 +1005,8 @@ security definer
 set search_path = public
 as $$
 declare
-  v_uid  uuid := auth.uid();
+  v_uid                   uuid := auth.uid();
+  v_attendance_record_id  uuid;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'message', 'Not signed in.');
@@ -1015,7 +1046,7 @@ begin
   else
     insert into public.attendance_records (
       event_id, student_id, attended, checked_in_at, status,
-      excuse_reason, staff_note, is_late, marked_by
+      excuse_reason, is_late, marked_by
     )
     values (
       p_event_id, p_student_id,
@@ -1023,7 +1054,6 @@ begin
       case when p_status in ('present', 'late') then now() else null end,
       p_status,
       p_excuse_reason,
-      p_staff_note,
       p_status = 'late',
       v_uid
     )
@@ -1037,9 +1067,26 @@ begin
       end,
       status = excluded.status,
       excuse_reason = excluded.excuse_reason,
-      staff_note = excluded.staff_note,
       is_late = excluded.is_late,
-      marked_by = excluded.marked_by;
+      marked_by = excluded.marked_by
+    returning id into v_attendance_record_id;
+
+    if coalesce(p_staff_note, '') = '' then
+      delete from public.attendance_staff_notes
+       where attendance_record_id = v_attendance_record_id;
+    else
+      insert into public.attendance_staff_notes (
+        attendance_record_id, staff_note, created_by, updated_at
+      )
+      values (
+        v_attendance_record_id, p_staff_note, v_uid, now()
+      )
+      on conflict (attendance_record_id)
+      do update set
+        staff_note = excluded.staff_note,
+        created_by = excluded.created_by,
+        updated_at = excluded.updated_at;
+    end if;
   end if;
 
   return jsonb_build_object('ok', true);
