@@ -834,7 +834,8 @@ $$;
 
 -- Manual fallback for students whose camera won't start: same validation as
 -- record_attendance (same checkin_sessions token/expiry rules) but keyed off
--- the short entry_code the staff member reads aloud / displays on screen.create or replace function public.record_attendance_by_code(p_code text)
+-- the short entry_code the staff member reads aloud / displays on screen.
+create or replace function public.record_attendance_by_code(p_code text)
 returns jsonb
 language plpgsql
 security definer
