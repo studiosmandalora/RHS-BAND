@@ -52,6 +52,15 @@ export const inviteMember = (
     p_instrument: instrument,
   });
 
+/**
+ * Bulk roster import: adds many members in one call. Returns a per-row
+ * result array ({email, ok, message, temp_password}) plus succeeded/failed
+ * counts — a bad row never blocks the rest of the batch (max 200 rows).
+ */
+export const inviteMembersBulk = (
+  members: { email: string; full_name: string; instrument: string }[]
+) => callRpc("invite_members_bulk", { p_members: members });
+
 export const setBandJoinCode = (code: string) =>
   callRpc("set_band_join_code", { p_code: code });
 

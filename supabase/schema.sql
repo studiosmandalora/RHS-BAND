@@ -1106,7 +1106,12 @@ $$;
 --
 -- Directors may add anyone to any section. Section leaders may only add
 -- members to their OWN section (always as students).
-create or replace function public.invite_member(
+--
+-- Shared single-row implementation behind BOTH the single invite_member() RPC
+-- and the bulk invite_members_bulk() RPC — the role checks, the section
+-- scoping and the auth-user creation live here exactly once. Clients cannot
+-- call it directly (EXECUTE is revoked below); only the two RPCs do.
+create or replace function public.invite_member_one(
   p_email      text,
   p_full_name  text,
   p_instrument text default ''
@@ -1237,6 +1242,111 @@ begin
 exception
   when others then
     return jsonb_build_object('ok', false, 'message', 'Could not add member: ' || sqlerrm);
+end;
+$$;
+
+-- Thin wrapper kept for backward compatibility: same signature, same
+-- behaviour, same permission rules — it just delegates to the shared
+-- single-row implementation above so the single-add flow can never drift
+-- away from the bulk one.
+create or replace function public.invite_member(
+  p_email      text,
+  p_full_name  text,
+  p_instrument text default ''
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+begin
+  return public.invite_member_one(p_email, p_full_name, p_instrument);
+exception
+  when others then
+    return jsonb_build_object('ok', false, 'message', 'Could not add member: ' || sqlerrm);
+end;
+$$;
+
+-- Bulk roster import: accepts an array of {email, full_name, instrument}
+-- objects and runs every row through invite_member_one(), so the permission
+-- rules are identical to the single-member flow (director: any section;
+-- section leader: their own section, always as students — including the
+-- forced-instrument scoping, which lives only in the shared implementation).
+--
+-- Each row is reported individually — one bad row (invalid email, existing
+-- account, …) never blocks the rest of the batch — and the batch is capped at
+-- 200 rows to avoid a runaway request.
+create or replace function public.invite_members_bulk(p_members jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_uid     uuid := auth.uid();
+  v_total   int;
+  v_ok      int := 0;
+  v_failed  int := 0;
+  v_row     jsonb;
+  v_result  jsonb;
+  v_results jsonb := '[]'::jsonb;
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'message', 'Not signed in.');
+  end if;
+  -- Fail fast on permissions so an unauthorized caller gets one clear error
+  -- instead of N identical per-row ones. invite_member_one re-checks this
+  -- same rule for every row — the logic itself lives only there.
+  if not (public.user_has_role('director') or public.user_has_role('section_leader')) then
+    return jsonb_build_object('ok', false, 'message', 'Only directors and section leaders can add members.');
+  end if;
+  if p_members is null or jsonb_typeof(p_members) <> 'array' then
+    return jsonb_build_object('ok', false, 'message', 'Expected an array of members.');
+  end if;
+
+  v_total := jsonb_array_length(p_members);
+  if v_total = 0 then
+    return jsonb_build_object('ok', false, 'message', 'No rows to import.');
+  end if;
+  if v_total > 200 then
+    return jsonb_build_object('ok', false, 'message', 'Too many rows — import at most 200 at a time.');
+  end if;
+
+  for v_row in select * from jsonb_array_elements(p_members) loop
+    begin
+      v_result := public.invite_member_one(
+        coalesce(v_row ->> 'email', ''),
+        coalesce(v_row ->> 'full_name', ''),
+        coalesce(v_row ->> 'instrument', '')
+      );
+    exception
+      when others then
+        -- A single failing row must never abort the whole batch.
+        v_result := jsonb_build_object('ok', false, 'message', 'Could not add member: ' || sqlerrm);
+    end;
+
+    if coalesce(v_result ->> 'ok', 'false') = 'true' then
+      v_ok := v_ok + 1;
+    else
+      v_failed := v_failed + 1;
+    end if;
+
+    v_results := v_results || jsonb_build_array(jsonb_build_object(
+      'email', coalesce(v_row ->> 'email', ''),
+      'ok', coalesce(v_result ->> 'ok', 'false') = 'true',
+      'message', coalesce(v_result ->> 'message', ''),
+      -- Only present for brand-new accounts — the director must relay it.
+      'temp_password', v_result -> 'temp_password'
+    ));
+  end loop;
+
+  return jsonb_build_object(
+    'ok', true,
+    'total', v_total,
+    'succeeded', v_ok,
+    'failed', v_failed,
+    'results', v_results
+  );
 end;
 $$;
 
@@ -1505,7 +1615,14 @@ grant execute on function public.start_checkin_session(uuid) to authenticated;
 grant execute on function public.record_attendance(text) to authenticated;
 grant execute on function public.record_attendance_by_code(text) to authenticated;
 grant execute on function public.override_attendance(uuid, uuid, boolean) to authenticated;
+-- invite_member_one is an internal helper shared by the two RPCs above.
+-- Postgres grants EXECUTE to PUBLIC by default, so revoke from PUBLIC first —
+-- revoking only from roles would leave PUBLIC (and with it every client) able
+-- to call it directly. The RPCs run as the function owner, so they keep working.
+revoke execute on function public.invite_member_one(text, text, text) from public;
+revoke execute on function public.invite_member_one(text, text, text) from anon, authenticated;
 grant execute on function public.invite_member(text, text, text) to authenticated;
+grant execute on function public.invite_members_bulk(jsonb) to authenticated;
 grant execute on function public.set_band_join_code(text) to authenticated;
 grant execute on function public.get_band_join_code_status() to authenticated;
 grant execute on function public.get_band_join_code() to authenticated;

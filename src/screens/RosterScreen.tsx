@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   Copy,
+  Download,
   KeyRound,
   Power,
   RefreshCw,
   ShieldCheck,
   Trash2,
+  Upload,
   UserCheck,
   UserPlus,
   Users,
@@ -17,12 +19,13 @@ import {
   getBandJoinCode,
   getBandJoinCodeStatus,
   inviteMember,
+  inviteMembersBulk,
   reactivateMember,
   resetMemberPassword,
   setBandJoinCode,
   updateMemberInstrument,
 } from "../lib/rpc";
-import type { Profile, Role } from "../lib/types";
+import type { BulkInviteRow, Profile, Role } from "../lib/types";
 import { INSTRUMENTS, ROLE_CHIP, ROLE_LABEL } from "../lib/constants";
 import {
   Alert,
@@ -46,6 +49,166 @@ function randomCode(len = 8): string {
   return out;
 }
 
+/** Max rows per bulk import — mirrors the cap enforced by invite_members_bulk. */
+const MAX_BULK_ROWS = 200;
+
+/** One parsed CSV row plus its preview validation state. */
+type BulkRow = {
+  email: string;
+  full_name: string;
+  instrument: string;
+  /** Blocking problem — the row is skipped when importing. */
+  issue: string | null;
+  /** Non-blocking note (e.g. an unknown section name). */
+  warn?: string;
+};
+
+/**
+ * Minimal CSV parser — quoted fields, "" escapes, CRLF, Excel BOM. Kept
+ * dependency-free on purpose (nothing in package.json parses CSV).
+ */
+function parseCsv(text: string): string[][] {
+  text = text.replace(/^\uFEFF/, "");
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell);
+      cell = "";
+      rows.push(row);
+      row = [];
+    } else {
+      cell += ch;
+    }
+  }
+  if (cell !== "" || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+  // Drop rows where every cell is blank (Excel often adds trailing empties).
+  return rows.filter((r) => r.some((c) => c.trim() !== ""));
+}
+
+/**
+ * Parse an uploaded CSV into validated preview rows. The header row must
+ * contain email and full_name; instrument (or section) is optional.
+ */
+function buildBulkRows(
+  text: string
+): { rows: BulkRow[]; error: string | null } {
+  const grid = parseCsv(text);
+  if (grid.length === 0) return { rows: [], error: "That file is empty." };
+
+  const norm = (h: string) => h.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const header = grid[0].map(norm);
+  const idxEmail = header.findIndex((h) =>
+    ["email", "e_mail", "email_address"].includes(h)
+  );
+  const idxName = header.findIndex((h) =>
+    ["full_name", "name", "student_name"].includes(h)
+  );
+  const idxInstrument = header.findIndex((h) =>
+    ["instrument", "section"].includes(h)
+  );
+
+  const missing: string[] = [];
+  if (idxEmail < 0) missing.push("email");
+  if (idxName < 0) missing.push("full_name");
+  if (missing.length > 0) {
+    return {
+      rows: [],
+      error: `Missing required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Expected a header row with email, full_name and (optionally) instrument.`,
+    };
+  }
+
+  const data = grid.slice(1);
+  if (data.length === 0) {
+    return { rows: [], error: "No data rows found below the header row." };
+  }
+  if (data.length > MAX_BULK_ROWS) {
+    return {
+      rows: [],
+      error: `That file has ${data.length} rows — imports are capped at ${MAX_BULK_ROWS} at a time.`,
+    };
+  }
+
+  const seen = new Map<string, number>();
+  const rows: BulkRow[] = data.map((cells, i) => {
+    const email = (cells[idxEmail] ?? "").trim().toLowerCase();
+    const full_name = (cells[idxName] ?? "").trim();
+    const raw = (idxInstrument >= 0 ? (cells[idxInstrument] ?? "") : "").trim();
+    // Match the canonical casing so section comparisons (a section leader's
+    // scope, roster grouping) keep working with files like "flute".
+    const canonical = INSTRUMENTS.find(
+      (s) => s.toLowerCase() === raw.toLowerCase()
+    );
+    const instrument = canonical ?? raw;
+
+    let issue: string | null = null;
+    if (!email) issue = "Missing email";
+    else if (!/^[^\s@]+@[^\s@]+$/.test(email)) issue = "Invalid email";
+    else if (!full_name) issue = "Missing full name";
+    else {
+      const first = seen.get(email);
+      if (first !== undefined) issue = `Duplicate of row ${first}`;
+      else seen.set(email, i + 1);
+    }
+
+    return {
+      email,
+      full_name,
+      instrument,
+      issue,
+      warn:
+        !issue && raw && !canonical
+          ? `"${raw}" isn't a known section`
+          : undefined,
+    };
+  });
+
+  return { rows, error: null };
+}
+
+/** Download the CSV template — same Blob flow as AttendanceScreen's exportCsv(). */
+function downloadTemplate() {
+  const template = [
+    ["email", "full_name", "instrument"],
+    ["jamie.rivera@rhsband.org", "Jamie Rivera", "Flute"],
+    ["noah.williams@rhsband.org", "Noah Williams", "Saxophone"],
+    ["mia.chen@rhsband.org", "Mia Chen", ""],
+  ];
+  const escape = (v: string) =>
+    /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  const csv = template.map((row) => row.map(escape).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "roster-import-template.csv";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function RosterScreen() {
   const { profile } = useOutletContext<{ profile: Profile }>();
   const isDirector = profile.roles.includes("director");
@@ -61,6 +224,20 @@ export default function RosterScreen() {
   const [addEmail, setAddEmail] = useState("");
   const [addInstrument, setAddInstrument] = useState<string>(INSTRUMENTS[0]);
   const [adding, setAdding] = useState(false);
+
+  // bulk import modal
+  const [showBulk, setShowBulk] = useState(false);
+  const [bulkRows, setBulkRows] = useState<BulkRow[] | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkSending, setBulkSending] = useState(false);
+  const [bulkResults, setBulkResults] = useState<{
+    total: number;
+    succeeded: number;
+    failed: number;
+    rows: BulkInviteRow[];
+  } | null>(null);
+  const [bulkCopied, setBulkCopied] = useState(false);
+  const bulkFileRef = useRef<HTMLInputElement | null>(null);
 
   // member actions (deactivate / reactivate / reset password)
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -232,6 +409,79 @@ export default function RosterScreen() {
     void load();
   }
 
+  /* --------------------------- bulk CSV import --------------------------- */
+  function openBulk() {
+    setBulkRows(null);
+    setBulkError(null);
+    setBulkResults(null);
+    setBulkCopied(false);
+    setShowBulk(true);
+  }
+
+  async function onBulkFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file after fixing it
+    if (!file) return;
+    setBulkError(null);
+    setBulkResults(null);
+    try {
+      const { rows, error } = buildBulkRows(await file.text());
+      if (error) {
+        setBulkRows(null);
+        setBulkError(error);
+        return;
+      }
+      setBulkRows(rows);
+    } catch {
+      setBulkRows(null);
+      setBulkError("Could not read that file — is it a CSV?");
+    }
+  }
+
+  async function submitBulk() {
+    if (!bulkRows) return;
+    // Rows with problems stay behind (they're called out in the preview).
+    const ready = bulkRows.filter((r) => !r.issue);
+    if (ready.length === 0) return;
+    setError(null);
+    setNotice(null);
+    setBulkSending(true);
+    const { result, error: rpcError } = await inviteMembersBulk(
+      ready.map((r) => ({
+        email: r.email,
+        full_name: r.full_name,
+        instrument: r.instrument,
+      }))
+    );
+    setBulkSending(false);
+    if (rpcError || !result?.ok) {
+      setBulkError(
+        rpcError?.message ?? result?.message ?? "Could not import members."
+      );
+      return;
+    }
+    setBulkResults({
+      total: result.total ?? ready.length,
+      succeeded: result.succeeded ?? 0,
+      failed: result.failed ?? 0,
+      rows: result.results ?? [],
+    });
+    void load();
+  }
+
+  async function copyBulkPasswords() {
+    const lines = (bulkResults?.rows ?? [])
+      .filter((r) => r.ok && r.temp_password)
+      .map((r) => `${r.email}: ${r.temp_password}`);
+    if (lines.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setBulkCopied(true);
+    } catch {
+      /* ignore — the passwords are on screen to copy manually */
+    }
+  }
+
   /* ------------------------- band join code ------------------------------ */
   useEffect(() => {
     if (!isDirector) return;
@@ -294,6 +544,9 @@ export default function RosterScreen() {
     }
   }
 
+  const readyCount = bulkRows?.filter((r) => !r.issue).length ?? 0;
+  const blockedCount = (bulkRows?.length ?? 0) - readyCount;
+
   return (
     <div className="px-4 pb-6 pt-5">
       <div className="mb-4 flex items-center justify-between">
@@ -306,9 +559,14 @@ export default function RosterScreen() {
           </p>
         </div>
         {canManage && (
-          <Button size="sm" onClick={() => setShowAdd(true)}>
-            <UserPlus className="size-4" /> Add member
-          </Button>
+          <div className="flex shrink-0 gap-2">
+            <Button size="sm" onClick={() => setShowAdd(true)}>
+              <UserPlus className="size-4" /> Add member
+            </Button>
+            <Button size="sm" variant="outline" onClick={openBulk}>
+              <Upload className="size-4" /> Bulk import
+            </Button>
+          </div>
         )}
       </div>
 
@@ -595,6 +853,222 @@ export default function RosterScreen() {
             Add to roster
           </Button>
         </form>
+      </Modal>
+
+      {/* bulk import modal */}
+      <Modal
+        open={showBulk}
+        onClose={() => setShowBulk(false)}
+        title={bulkResults ? "Import results" : "Bulk import"}
+      >
+        {bulkResults ? (
+          <div className="space-y-4">
+            <Alert tone={bulkResults.failed > 0 ? "info" : "success"}>
+              {bulkResults.succeeded} of {bulkResults.total} row
+              {bulkResults.total === 1 ? "" : "s"} imported
+              {bulkResults.failed > 0
+                ? ` — ${bulkResults.failed} failed.`
+                : "."}
+            </Alert>
+
+            {bulkResults.failed > 0 && (
+              <div>
+                <p className="mb-1.5 text-xs font-bold text-ink dark:text-zinc-100">
+                  Rows that failed
+                </p>
+                <ul className="space-y-1">
+                  {bulkResults.rows
+                    .map((r, i) => ({ r, i }))
+                    .filter(({ r }) => !r.ok)
+                    .map(({ r, i }) => (
+                      <li key={i} className="text-xs text-red-500">
+                        <span className="font-semibold">
+                          {r.email || "(no email)"}
+                        </span>{" "}
+                        — {r.message}
+                      </li>
+                    ))}
+                </ul>
+              </div>
+            )}
+
+            {bulkResults.rows.some((r) => r.ok && r.temp_password) && (
+              <div>
+                <p className="mb-1.5 text-xs font-bold text-ink dark:text-zinc-100">
+                  Temporary passwords
+                </p>
+                <p className="mb-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Share each one directly — they'll be forced to set their own
+                  password the first time they sign in.
+                </p>
+                <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-xl bg-cream p-3 dark:bg-zinc-800">
+                  {bulkResults.rows
+                    .filter((r) => r.ok && r.temp_password)
+                    .map((r, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between gap-3 text-xs"
+                      >
+                        <span className="truncate text-zinc-500 dark:text-zinc-400">
+                          {r.email}
+                        </span>
+                        <code className="shrink-0 font-mono font-bold text-forest dark:text-gold">
+                          {r.temp_password}
+                        </code>
+                      </div>
+                    ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => void copyBulkPasswords()}
+                >
+                  <Copy className="size-4" /> {bulkCopied ? "Copied" : "Copy all"}
+                </Button>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => {
+                  setBulkResults(null);
+                  setBulkRows(null);
+                  setBulkError(null);
+                  setBulkCopied(false);
+                }}
+              >
+                Import another file
+              </Button>
+              <Button className="flex-1" onClick={() => setShowBulk(false)}>
+                Done
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Upload a CSV with the columns{" "}
+              <span className="font-semibold text-ink dark:text-zinc-200">
+                email, full_name, instrument
+              </span>{" "}
+              (instrument optional) to add everyone at once. New accounts get a
+              one-time temporary password, same as adding one member.
+            </p>
+
+            <div className="flex gap-2">
+              <input
+                ref={bulkFileRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={(e) => void onBulkFile(e)}
+              />
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => bulkFileRef.current?.click()}
+              >
+                <Upload className="size-4" /> Choose CSV
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                title="Download a CSV template with the expected columns"
+                onClick={downloadTemplate}
+              >
+                <Download className="size-4" /> Template
+              </Button>
+            </div>
+
+            {!isDirector && (
+              <p className="rounded-xl bg-moss/30 px-3 py-2 text-xs font-semibold text-forest dark:bg-forest/30 dark:text-moss">
+                Every row will be added to the {profile.instrument || "your"}{" "}
+                section.
+              </p>
+            )}
+
+            {bulkError && <Alert tone="error">{bulkError}</Alert>}
+
+            {bulkRows && (
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-xs font-bold text-ink dark:text-zinc-100">
+                    Preview — {readyCount} of {bulkRows.length} ready
+                  </p>
+                  {blockedCount > 0 && (
+                    <p className="text-[11px] font-semibold text-red-500">
+                      {blockedCount} skipped
+                    </p>
+                  )}
+                </div>
+                <div className="max-h-64 overflow-y-auto rounded-xl ring-1 ring-black/5 dark:ring-white/10">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-cream text-[10px] uppercase tracking-wide text-zinc-400 dark:bg-zinc-800">
+                      <tr>
+                        <th className="px-3 py-2 font-semibold">#</th>
+                        <th className="px-3 py-2 font-semibold">Email</th>
+                        <th className="px-3 py-2 font-semibold">Name</th>
+                        <th className="px-3 py-2 font-semibold">Section</th>
+                        <th className="px-3 py-2 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkRows.map((r, i) => (
+                        <tr
+                          key={i}
+                          className="border-t border-zinc-100 dark:border-zinc-800"
+                        >
+                          <td className="px-3 py-1.5 text-zinc-400">{i + 1}</td>
+                          <td className="max-w-36 truncate px-3 py-1.5 font-semibold text-ink dark:text-zinc-200">
+                            {r.email || "—"}
+                          </td>
+                          <td className="max-w-28 truncate px-3 py-1.5 text-ink dark:text-zinc-200">
+                            {r.full_name || "—"}
+                          </td>
+                          <td className="px-3 py-1.5 text-zinc-500 dark:text-zinc-400">
+                            {r.instrument || "—"}
+                          </td>
+                          <td className="px-3 py-1.5">
+                            {r.issue ? (
+                              <span className="font-semibold text-red-500">
+                                {r.issue}
+                              </span>
+                            ) : r.warn ? (
+                              <span className="font-semibold text-amber-600 dark:text-amber-400">
+                                {r.warn}
+                              </span>
+                            ) : (
+                              <span className="font-semibold text-forest dark:text-moss">
+                                Ready
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="mt-1.5 text-[11px] text-zinc-400">
+                  Fix problem rows in the file and re-upload — ready rows import
+                  now.
+                </p>
+              </div>
+            )}
+
+            <Button
+              size="lg"
+              className="w-full"
+              loading={bulkSending}
+              disabled={readyCount === 0}
+              onClick={() => void submitBulk()}
+            >
+              Import {readyCount} member{readyCount === 1 ? "" : "s"}
+            </Button>
+          </div>
+        )}
       </Modal>
 
       {/* reset password result */}

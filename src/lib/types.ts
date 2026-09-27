@@ -108,6 +108,15 @@ export interface NotificationRow {
   created_at: string;
 }
 
+/** One row's outcome from the invite_members_bulk RPC. */
+export interface BulkInviteRow {
+  email: string;
+  ok: boolean;
+  message: string;
+  /** Only present when a brand-new account (and temp password) was created. */
+  temp_password?: string | null;
+}
+
 /** Shape returned by all the security-definer RPC functions. */
 export interface RpcResult {
   ok: boolean;
@@ -129,4 +138,8 @@ export interface RpcResult {
   excused?: number;
   absent?: number;
   total?: number;
+  // invite_members_bulk
+  succeeded?: number;
+  failed?: number;
+  results?: BulkInviteRow[];
 }
