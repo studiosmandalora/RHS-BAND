@@ -8,6 +8,7 @@
 // Deploy & configure:
 //   supabase functions deploy send_signup_reminder
 //   supabase secrets set SENDGRID_API_KEY=SG.xxxx SENDGRID_FROM=no-reply@yourdomain.org
+//   Optional: set PUBLIC_APP_URL=https://your-app-domain to pin the email logo URL.
 //
 // Invoked from the client (director only):
 //   supabase.functions.invoke("send_signup_reminder", { body: { event_id } })
@@ -41,7 +42,12 @@ function json(body: unknown, status = 200): Response {
 // paginated and has been failing with "no users found in database".
 
 /** Send one email through the SendGrid v3 API. */
-async function sendEmail(to: { email: string; name: string }, subject: string, text: string) {
+async function sendEmail(
+  to: { email: string; name: string },
+  subject: string,
+  text: string,
+  html: string,
+) {
   const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
     headers: {
@@ -52,13 +58,50 @@ async function sendEmail(to: { email: string; name: string }, subject: string, t
       personalizations: [{ to: [{ email: to.email, name: to.name }] }],
       from: { email: sendgridFrom, name: "RHS Band" },
       subject,
-      content: [{ type: "text/plain", value: text }],
+      content: [
+        { type: "text/plain", value: text },
+        { type: "text/html", value: html },
+      ],
     }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     throw new Error(`SendGrid ${res.status}: ${detail.slice(0, 300)}`);
   }
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
+}
+
+function reminderHtml(
+  name: string,
+  eventName: string,
+  dateLabel: string,
+  logoUrl: string,
+): string {
+  return `<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:24px;background:#f4f6f2;font-family:Arial,sans-serif;color:#20251e;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;padding:28px 32px;border:1px solid #dce3d8;">
+      <img src="${logoUrl}" alt="RHS Band" width="160" style="display:block;width:160px;height:auto;margin:0 0 24px;" />
+      <p style="margin:0 0 16px;">Hi ${escapeHtml(name)},</p>
+      <p style="margin:0 0 16px;">You haven't checked in yet for this event:</p>
+      <p style="margin:0 0 20px;font-weight:bold;">${escapeHtml(eventName)} &mdash; ${escapeHtml(dateLabel)}</p>
+      <p style="margin:0 0 24px;">Open the RHS Band app and check in so we can get an accurate headcount.</p>
+      <p style="margin:0;color:#53614c;">RHS Band</p>
+    </div>
+  </body>
+</html>`;
 }
 
 Deno.serve(async (req) => {
@@ -91,6 +134,16 @@ Deno.serve(async (req) => {
     if (!eventId) {
       return json({ ok: false, message: "Missing event_id." }, 400);
     }
+
+    const appUrl = Deno.env.get("PUBLIC_APP_URL") ?? req.headers.get("Origin");
+    if (!appUrl) {
+      return json({
+        ok: false,
+        message: "Couldn't determine the app URL for the email logo. Set the PUBLIC_APP_URL secret and redeploy send_signup_reminder.",
+      }, 500);
+    }
+    const appOrigin = new URL(appUrl).origin;
+    const logoUrl = `${appOrigin}/logo-dark.svg`;
 
     // 3. Event.
     const { data: event } = await supabase
@@ -166,7 +219,8 @@ Deno.serve(async (req) => {
               `This is a reminder that you haven't checked in yet for:\n` +
               `  ${event.name} — ${dateLabel}\n\n` +
               `Open the RHS Band app and check in so we can get an accurate headcount.\n\n` +
-              `— RHS Band`
+                `— RHS Band`,
+              reminderHtml(name, event.name, dateLabel, logoUrl),
           );
           sent += 1;
         } catch (e) {
