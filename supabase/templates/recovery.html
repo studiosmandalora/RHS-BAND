@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reset your RHS Band password</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f1f4ef;font-family:Arial,Helvetica,sans-serif;color:#20251e;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+      Use the secure link inside to choose a new password for RHS Band.
+    </div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f4ef;">
+      <tr>
+        <td align="center" style="padding:36px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background:#ffffff;border:1px solid #dce3d8;border-radius:8px;overflow:hidden;">
+            <tr>
+              <td align="center" style="padding:28px 24px;background:#254a1d;">
+                <img src="{{ .SiteURL }}/logo-dark.svg" alt="RHS Band" width="164" style="display:block;width:164px;max-width:100%;height:auto;border:0;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:36px 40px 20px;">
+                <p style="margin:0 0 12px;color:#557347;font-size:12px;font-weight:bold;line-height:1.4;letter-spacing:1px;text-transform:uppercase;">Account security</p>
+                <h1 style="margin:0 0 16px;color:#20251e;font-size:28px;line-height:1.25;font-weight:700;">Reset your password</h1>
+                <p style="margin:0;color:#53614c;font-size:16px;line-height:1.65;">
+                  We received a request to reset the password for your RHS Band account. Use the secure button below to choose a new password.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td align="left" style="padding:8px 40px 28px;">
+                <a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:14px 24px;border:1px solid #254a1d;border-radius:5px;background:#254a1d;color:#ffffff;font-size:16px;line-height:1.2;font-weight:bold;text-decoration:none;">Choose a new password</a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 40px 28px;">
+                <p style="margin:0 0 8px;color:#687365;font-size:13px;line-height:1.5;">If the button doesn't work, paste this link into your browser:</p>
+                <p style="margin:0;overflow-wrap:anywhere;word-break:break-word;font-size:13px;line-height:1.5;">
+                  <a href="{{ .ConfirmationURL }}" style="color:#315f25;text-decoration:underline;">{{ .ConfirmationURL }}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 40px;border-top:1px solid #e5e9e2;background:#f8faf7;">
+                <p style="margin:0;color:#687365;font-size:13px;line-height:1.6;">
+                  If you didn't request a password reset, you can safely ignore this email. Your password will stay the same.
+                </p>
+              </td>
+            </tr>
+          </table>
+          <p style="margin:18px 0 0;color:#788274;font-size:12px;line-height:1.5;text-align:center;">RHS Band Attendance</p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

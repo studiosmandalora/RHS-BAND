@@ -1,2 +1,26 @@
 [functions.sync_google_calendar]
 verify_jwt = false
+
+[auth.email.template.recovery]
+subject = "Reset your RHS Band password"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.confirmation]
+subject = "Confirm your RHS Band email"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.invite]
+subject = "You're invited to RHS Band"
+content_path = "./supabase/templates/invite.html"
+
+[auth.email.template.magic_link]
+subject = "Your RHS Band sign-in link"
+content_path = "./supabase/templates/magic_link.html"
+
+[auth.email.template.email_change]
+subject = "Confirm your new RHS Band email"
+content_path = "./supabase/templates/email_change.html"
+
+[auth.email.template.reauthentication]
+subject = "Your RHS Band verification code"
+content_path = "./supabase/templates/reauthentication.html"

@@ -92,18 +92,37 @@ The app was built with confirmation disabled (see the comment in
 > `supabase/schema.sql`) — the director vouches for them, so they skip the
 > confirmation email on purpose. Only self-signups are affected.
 
-## Step 6 — (Optional) Customize the email templates
+## Step 6 — Customize the Auth email templates
 
 **Authentication → Emails → Templates** — you can edit the subject/body for:
 
 - **Confirm signup** (the verification email)
 - **Reset password**
-- **Invite user**, **Magic link**, **Change email address**
+- **Invite user**, **Magic link**, **Change email address**, **Reauthentication**
 
 Templates support variables like `{{ .ConfirmationURL }}` (the click-to-confirm
 link), `{{ .SiteURL }}`, and `{{ .Email }}`. The confirmation link points at
 your app origin (set via `emailRedirectTo` in the signup call) and the app
 auto-completes sign-in when the user lands on it.
+
+Use the matching subject and HTML file for each template:
+
+| Auth template | HTML file |
+| --- | --- |
+| Confirm signup | `supabase/templates/confirmation.html` |
+| Reset password | `supabase/templates/recovery.html` |
+| Invite user | `supabase/templates/invite.html` |
+| Magic link | `supabase/templates/magic_link.html` |
+| Change email address | `supabase/templates/email_change.html` |
+| Reauthentication | `supabase/templates/reauthentication.html` |
+
+The matching template paths and subjects are configured in `supabase/config.toml`
+for local Supabase development. Hosted projects use the dashboard templates, so
+paste each file's contents into its matching template and save. All templates
+load the logo from `{{ .SiteURL }}/logo-dark.svg`; **Authentication → URL
+Configuration → Site URL** must be your deployed app origin, and opening
+`<Site URL>/logo-dark.svg` in a browser must show the logo. Signup confirmation
+emails are only sent when **Confirm email** is enabled in Step 5.
 
 ## Step 7 — Test it
 
