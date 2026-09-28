@@ -6,7 +6,7 @@
 -- demoable immediately.
 --
 -- Most demo accounts use the password:  band1234
---   guest@checkin.com        → Guest           (guest — staff view; password: Orchestra2027)
+--   guest@checkin.com        → Guest           (guest — staff view; password: Guest123)
 --   director@rhsband.org     → Marissa Bennett (director)
 --   tyler.nguyen@rhsband.org → Tyler Nguyen    (trumpet, section leader)
 --   ava.rodriguez@...        etc. (students across sections)
@@ -276,7 +276,7 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'guest@checkin.com', crypt('Orchestra2027', gen_salt('bf', 10)), now(),
+      'guest@checkin.com', crypt('Guest123', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
       '{"full_name":"Guest","display_name":"Guest","instrument":""}',
       now(), now()
