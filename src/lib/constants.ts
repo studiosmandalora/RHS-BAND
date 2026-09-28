@@ -133,7 +133,7 @@ export function getEventTypeChip(type: string): string {
 
 export function demoAccounts(): { email: string; note: string; password: string }[] {
   return [
-    { email: "guest@checkin.com", note: "Guest — staff view", password: "Guest123" },
+    { email: "guest@checkin.com", note: "Guest — staff view", password: "Orchestra2027" },
     { email: "director@rhsband.org", note: "Director — full admin", password: "band1234" },
     { email: "secretary@rhsband.org", note: "Secretary — events & check-in", password: "band1234" },
     { email: "tyler.nguyen@rhsband.org", note: "Trumpet section leader", password: "band1234" },

@@ -6,7 +6,7 @@
 -- demoable immediately.
 --
 -- Most demo accounts use the password:  band1234
---   guest@checkin.com        → Camille Gates   (guest — staff view; password: Guest123)
+--   guest@checkin.com        → Guest           (guest — staff view; password: Orchestra2027)
 --   director@rhsband.org     → Marissa Bennett (director)
 --   tyler.nguyen@rhsband.org → Tyler Nguyen    (trumpet, section leader)
 --   ava.rodriguez@...        etc. (students across sections)
@@ -265,7 +265,7 @@ begin
     );
   end if;
 
-  -- ---------- Camille Gates — guest (prospective orchestra director) ----------
+  -- ---------- Guest — guest (prospective orchestra director) ----------
   -- A low-touch viewer account: secretary role (events & check-in staff view,
   -- no roster admin) so someone trying the app for their own orchestra can
   -- look around without full administrative powers.
@@ -276,9 +276,9 @@ begin
       raw_app_meta_data, raw_user_meta_data, created_at, updated_at
     ) values (
       v_id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
-      'guest@checkin.com', crypt('Guest123', gen_salt('bf', 10)), now(),
+      'guest@checkin.com', crypt('Orchestra2027', gen_salt('bf', 10)), now(),
       '{}'::jsonb,
-      '{"full_name":"Camille Gates","display_name":"Camille","instrument":""}',
+      '{"full_name":"Guest","display_name":"Guest","instrument":""}',
       now(), now()
     );
     insert into auth.identities (
@@ -309,7 +309,7 @@ values
   ('2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', 'Diego Silva',     'Diego',       'Baritone',    '{student}',              false),
   ('3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', 'Chloe Brooks',    'Chloe',       'Flute',       '{student}',              false),
   ('4d4d4d4d-4d4d-4d4d-8d4d-4d4d4d4d4d4d', 'Sam Rivera',      'Sam',         '',            '{secretary}',            false),
-  ('5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e', 'Camille Gates',   'Camille',     '',            '{secretary}',            false)
+  ('5e5e5e5e-5e5e-4e5e-8e5e-5e5e5e5e5e5e', 'Guest',          'Guest',       '',            '{secretary}',            false)
 on conflict (id) do update
   set full_name = excluded.full_name,
       display_name = excluded.display_name,
