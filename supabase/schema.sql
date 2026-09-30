@@ -15,6 +15,12 @@
 --   * Check-in codes can only be issued through start_checkin_session (staff
 --     only) and are single-use-per-generation: issuing a new code deletes the
 --     old one for that event.
+--   * Analytics RPCs verify the caller is a director INSIDE the SECURITY
+--     DEFINER function (frontend gating is not authorization).
+--   * attendance_staff_notes is section-scoped: section leaders only read
+--     notes for students in their own section; students never read them.
+--   * QR check-in is accepted only from 15 minutes before the event start
+--     until the event ends, and only while the event is QR-enabled.
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -250,6 +256,62 @@ alter table public.checkin_sessions
     foreign key (created_by) references public.profiles (id) on delete cascade;
 
 -- ---------------------------------------------------------------------------
+-- 3c. Check-in mode × attendance requirement consistency
+-- ---------------------------------------------------------------------------
+-- Drop active QR sessions as soon as an event stops being QR-enabled. The
+-- Check-In screen and the event form update checkin_mode directly through
+-- RLS, so this must live on the events UPDATE path — no RPC can intercept
+-- it. SECURITY DEFINER so the table owner performs the delete (clients have
+-- no delete rights on checkin_sessions). Trigger functions cannot be invoked
+-- as ordinary RPCs ("trigger functions can only be called as triggers").
+create or replace function public.invalidate_checkin_sessions_on_mode_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  -- Only QR-capable modes ('qr', 'both') can back a live QR session.
+  if new.checkin_mode not in ('qr', 'both') then
+    delete from public.checkin_sessions where event_id = new.id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists events_checkin_mode_changed on public.events;
+create trigger events_checkin_mode_changed
+  after update of checkin_mode on public.events
+  for each row
+  when (old.checkin_mode is distinct from new.checkin_mode)
+  execute function public.invalidate_checkin_sessions_on_mode_change();
+
+-- Normalize existing contradictory rows BEFORE adding the constraint.
+-- The event form forces checkin_mode = 'none' when the requirement is set to
+-- "No Attendance", and migration 001 §13 forced requirement = 'none' for
+-- checkin_mode = 'none' — together they mean "none ⟺ none".
+update public.events
+   set attendance_requirement = 'none'
+ where checkin_mode = 'none'
+   and attendance_requirement <> 'none';
+
+update public.events
+   set checkin_mode = 'none'
+ where attendance_requirement = 'none'
+   and checkin_mode <> 'none';
+
+alter table public.events drop constraint if exists events_requirement_mode_check;
+alter table public.events add constraint events_requirement_mode_check
+  check ((attendance_requirement = 'none') = (checkin_mode = 'none'));
+
+-- QR sessions of events that are no longer QR-capable can never be redeemed
+-- (the record RPCs re-check the mode), but delete them so they don't linger.
+delete from public.checkin_sessions cs
+ using public.events e
+ where e.id = cs.event_id
+   and e.checkin_mode not in ('qr', 'both');
+
+-- ---------------------------------------------------------------------------
 -- 4. Attendance records
 -- ---------------------------------------------------------------------------
 create table if not exists public.attendance_records (
@@ -269,6 +331,30 @@ create table if not exists public.attendance_records (
 
 create index if not exists attendance_records_student_idx on public.attendance_records (student_id);
 create index if not exists attendance_records_event_idx on public.attendance_records (event_id);
+
+-- status × attended must always agree:
+--   present/late → attended = true; absent/excused → attended = false.
+-- Normalize existing contradictory rows first (seeded rows insert attended =
+-- true with the default status 'absent'; the old QR conflict clause could set
+-- attended = true on an 'excused' row), then lock the relationship in.
+update public.attendance_records
+   set status = case when coalesce(is_late, false) then 'late' else 'present' end
+ where status = 'absent'
+   and attended = true;
+
+update public.attendance_records
+   set attended = false
+ where status = 'excused'
+   and attended = true;
+
+update public.attendance_records
+   set attended = true
+ where status in ('present', 'late')
+   and attended = false;
+
+alter table public.attendance_records drop constraint if exists attendance_records_status_attended_check;
+alter table public.attendance_records add constraint attendance_records_status_attended_check
+  check (attended = (status in ('present', 'late')));
 
 -- Internal notes are stored separately so students can never read them from
 -- their attendance row. RLS below limits note reads to staff, excluding the
@@ -552,14 +638,29 @@ create policy "attendance_staff_notes_read_staff"
   to authenticated
   using (
     exists (
-      select 1 from public.attendance_records ar
-      where ar.id = attendance_record_id
+      select 1
+      from public.attendance_records ar
+      join public.profiles s on s.id = ar.student_id
+      where ar.id = attendance_staff_notes.attendance_record_id
         and ar.student_id <> auth.uid()
-    )
-    and (
-      public.user_has_role('director')
-      or public.user_has_role('secretary')
-      or public.user_has_role('section_leader')
+        and (
+          -- Directors and secretaries see every note (unchanged: the
+          -- attendance read policy already gives them all records).
+          public.user_has_role('director')
+          or public.user_has_role('secretary')
+          -- Section leaders only see notes for students in their own
+          -- section. An empty instrument (leader or student) never matches,
+          -- so users without a section get no notes at all.
+          or (
+            public.user_has_role('section_leader')
+            and coalesce(s.instrument, '') <> ''
+            and s.instrument = (
+              select coalesce(lp.instrument, '')
+              from public.profiles lp
+              where lp.id = auth.uid()
+            )
+          )
+        )
     )
   );
 -- No client write policies: notes are written only by override_attendance().
@@ -694,6 +795,7 @@ set search_path = public, extensions
 as $$
 declare
   v_uid       uuid := auth.uid();
+  v_event     public.events%rowtype;
   v_token     text;
   v_entry     text;
   v_expires   timestamptz;
@@ -704,26 +806,31 @@ begin
   if not (public.user_has_role('director') or public.user_has_role('section_leader') or public.user_has_role('secretary')) then
     return jsonb_build_object('ok', false, 'message', 'Only directors, secretaries and section leaders can generate codes.');
   end if;
-  if not exists (select 1 from public.events where id = p_event_id) then
+  select * into v_event from public.events where id = p_event_id;
+  if not found then
     return jsonb_build_object('ok', false, 'message', 'That event no longer exists.');
   end if;
 
   -- Toggle-mode events don't use QR codes — staff mark attendance manually.
-  if (select checkin_mode from public.events where id = p_event_id) = 'toggle' then
+  if v_event.checkin_mode = 'toggle' then
     return jsonb_build_object('ok', false, 'message', 'This event uses toggle check-in — mark attendance with the buttons on the Check-In screen.');
   end if;
 
   -- 'none' events don't collect attendance at all.
-  if (select checkin_mode from public.events where id = p_event_id) = 'none' then
+  if v_event.checkin_mode = 'none' then
     return jsonb_build_object('ok', false, 'message', 'This event doesn''t collect attendance.');
   end if;
 
   -- Never open check-in for an event that has already ended.
   if now() > coalesce(
-    (select end_date from public.events where id = p_event_id),
-    (select date from public.events where id = p_event_id) + interval '24 hours'
+    v_event.end_date,
+    v_event.date + interval '24 hours'
   ) then
     return jsonb_build_object('ok', false, 'message', 'That event has already ended — check-in is closed.');
+  end if;
+
+  if now() < v_event.date - interval '15 minutes' then
+    return jsonb_build_object('ok', false, 'message', 'Check-in opens 15 minutes before the event.');
   end if;
 
   delete from public.checkin_sessions where event_id = p_event_id;
@@ -786,7 +893,7 @@ begin
 
   select cs.id, cs.event_id, cs.expires_at,
          ev.name as event_name, ev.date as event_date, ev.end_date as event_end,
-         ev.late_minutes
+         ev.late_minutes, ev.checkin_mode
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -820,11 +927,34 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  -- Attendance is only accepted while the event is happening (or hasn't
-  -- started yet). Once it's over, the code is dead even if it's still
-  -- unexpired — no retroactive check-ins.
+  -- A QR token only works while the event still collects attendance via QR.
+  -- This kills tokens whose event was switched to toggle/none even if the
+  -- session row somehow survived the invalidation trigger.
+  if v_session.checkin_mode not in ('qr', 'both') then
+    return jsonb_build_object('ok', false, 'message', 'This event doesn''t use QR check-in.');
+  end if;
+
+  -- Attendance is only accepted while the event is happening. Once it's over,
+  -- the code is dead even if it's still unexpired — no retroactive check-ins.
   if now() > coalesce(v_session.event_end, v_session.event_date + interval '24 hours') then
     return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
+  end if;
+
+  -- Check-in opens 15 minutes before the event start; earlier scans are
+  -- rejected with a clear message (enforced here, not in React).
+  if now() < v_session.event_date - interval '15 minutes' then
+    return jsonb_build_object('ok', false, 'message', 'Check-in has not opened yet.');
+  end if;
+
+  -- A staff-set excuse is final: don't let a QR scan overwrite it with a
+  -- contradictory excused/attended=true row.
+  if exists (
+    select 1 from public.attendance_records ar
+     where ar.event_id = v_session.event_id
+       and ar.student_id = v_uid
+       and ar.status = 'excused'
+  ) then
+    return jsonb_build_object('ok', false, 'message', 'You''ve been excused for this event — no check-in needed.');
   end if;
 
   -- Late detection: check if check-in is after grace period
@@ -843,18 +973,41 @@ begin
     v_session.event_id, v_uid, true, now(), v_status, v_is_late
   )
   on conflict (event_id, student_id)
-  do update set attended = true
+  do update set
+    -- First check-in wins: keep an existing present/late status, lateness
+    -- flag and timestamp. Anything else (legacy 'absent' rows) is upgraded to
+    -- this check-in's status so status and attended can never disagree.
+    status = case
+      when attendance_records.status in ('present', 'late') then attendance_records.status
+      else excluded.status
+    end,
+    is_late = case
+      when attendance_records.status in ('present', 'late') then attendance_records.is_late
+      else excluded.is_late
+    end,
+    attended = true,
+    checked_in_at = case
+      when attendance_records.status in ('present', 'late')
+        then coalesce(attendance_records.checked_in_at, now())
+      else now()
+    end
   returning * into v_record;
 
   update public.checkin_attempts set success = true where id = v_attempt;
 
+  -- Defend the invariant even against a lost race with a concurrent excuse:
+  -- the row must never be excused + attended = true.
+  if v_record.status = 'excused' then
+    return jsonb_build_object('ok', false, 'message', 'You''ve been excused for this event — no check-in needed.');
+  end if;
+
   return jsonb_build_object(
     'ok', true,
-    'message', case when v_is_late then 'Checked in (late)' else 'Checked in' end,
+    'message', case when v_record.status = 'late' then 'Checked in (late)' else 'Checked in' end,
     'event_id', v_session.event_id,
     'event_name', v_session.event_name,
     'checked_in_at', v_record.checked_in_at,
-    'is_late', v_is_late
+    'is_late', v_record.status = 'late'
   );
 exception
   when others then
@@ -893,7 +1046,7 @@ begin
 
   select cs.id, cs.event_id, cs.expires_at,
          ev.name as event_name, ev.date as event_date, ev.end_date as event_end,
-         ev.late_minutes
+         ev.late_minutes, ev.checkin_mode
     into v_session
     from public.checkin_sessions cs
     join public.events ev on ev.id = cs.event_id
@@ -927,11 +1080,34 @@ begin
     return jsonb_build_object('ok', false, 'message', 'That code has expired — ask for a fresh one.');
   end if;
 
-  -- Attendance is only accepted while the event is happening (or hasn't
-  -- started yet). Once it's over, the code is dead even if it's still
-  -- unexpired — no retroactive check-ins.
+  -- A QR token only works while the event still collects attendance via QR.
+  -- This kills tokens whose event was switched to toggle/none even if the
+  -- session row somehow survived the invalidation trigger.
+  if v_session.checkin_mode not in ('qr', 'both') then
+    return jsonb_build_object('ok', false, 'message', 'This event doesn''t use QR check-in.');
+  end if;
+
+  -- Attendance is only accepted while the event is happening. Once it's over,
+  -- the code is dead even if it's still unexpired — no retroactive check-ins.
   if now() > coalesce(v_session.event_end, v_session.event_date + interval '24 hours') then
     return jsonb_build_object('ok', false, 'message', 'That event has already ended — attendance is closed.');
+  end if;
+
+  -- Check-in opens 15 minutes before the event start; earlier scans are
+  -- rejected with a clear message (enforced here, not in React).
+  if now() < v_session.event_date - interval '15 minutes' then
+    return jsonb_build_object('ok', false, 'message', 'Check-in has not opened yet.');
+  end if;
+
+  -- A staff-set excuse is final: don't let a QR scan overwrite it with a
+  -- contradictory excused/attended=true row.
+  if exists (
+    select 1 from public.attendance_records ar
+     where ar.event_id = v_session.event_id
+       and ar.student_id = v_uid
+       and ar.status = 'excused'
+  ) then
+    return jsonb_build_object('ok', false, 'message', 'You''ve been excused for this event — no check-in needed.');
   end if;
 
   -- Late detection
@@ -950,18 +1126,41 @@ begin
     v_session.event_id, v_uid, true, now(), v_status, v_is_late
   )
   on conflict (event_id, student_id)
-  do update set attended = true
+  do update set
+    -- First check-in wins: keep an existing present/late status, lateness
+    -- flag and timestamp. Anything else (legacy 'absent' rows) is upgraded to
+    -- this check-in's status so status and attended can never disagree.
+    status = case
+      when attendance_records.status in ('present', 'late') then attendance_records.status
+      else excluded.status
+    end,
+    is_late = case
+      when attendance_records.status in ('present', 'late') then attendance_records.is_late
+      else excluded.is_late
+    end,
+    attended = true,
+    checked_in_at = case
+      when attendance_records.status in ('present', 'late')
+        then coalesce(attendance_records.checked_in_at, now())
+      else now()
+    end
   returning * into v_record;
 
   update public.checkin_attempts set success = true where id = v_attempt;
 
+  -- Defend the invariant even against a lost race with a concurrent excuse:
+  -- the row must never be excused + attended = true.
+  if v_record.status = 'excused' then
+    return jsonb_build_object('ok', false, 'message', 'You''ve been excused for this event — no check-in needed.');
+  end if;
+
   return jsonb_build_object(
     'ok', true,
-    'message', case when v_is_late then 'Checked in (late)' else 'Checked in' end,
+    'message', case when v_record.status = 'late' then 'Checked in (late)' else 'Checked in' end,
     'event_id', v_session.event_id,
     'event_name', v_session.event_name,
     'checked_in_at', v_record.checked_in_at,
-    'is_late', v_is_late
+    'is_late', v_record.status = 'late'
   );
 exception
   when others then
@@ -1015,7 +1214,9 @@ begin
     return jsonb_build_object('ok', false, 'message', 'Only staff may override attendance.');
   end if;
 
-  if public.user_has_role('section_leader') then
+  if public.user_has_role('section_leader')
+     and not public.user_has_role('director')
+     and not public.user_has_role('secretary') then
     if not exists (
       select 1 from public.profiles s
       where s.id = p_student_id
@@ -1880,33 +2081,38 @@ stable
 security definer
 set search_path = public
 as $$
-  select jsonb_build_object(
-    'ok', true,
-    'percentage', coalesce(
-      round(
-        (select count(*)::numeric from public.attendance_records ar
-         join public.events e on e.id = ar.event_id
-         where ar.student_id = p_student_id
-           and ar.attended = true
-           and e.archived = false
-           and e.attendance_requirement = 'required'
-        ) /
-        nullif(
-          (select count(*)::numeric from public.events e
-           where e.archived = false
-             and e.attendance_requirement = 'required'
-             and e.date < now()
-             and not exists (
-               select 1 from public.attendance_records ar2
-               where ar2.event_id = e.id
-                 and ar2.student_id = p_student_id
-                 and ar2.status = 'excused'
-             )
+  select case
+    when public.user_has_role('director') then (
+      select jsonb_build_object(
+        'ok', true,
+        'percentage', coalesce(
+          round(
+            (select count(*)::numeric from public.attendance_records ar
+             join public.events e on e.id = ar.event_id
+             where ar.student_id = p_student_id
+               and ar.attended = true
+               and e.archived = false
+               and e.attendance_requirement = 'required'
+            ) /
+            nullif(
+              (select count(*)::numeric from public.events e
+               where e.archived = false
+                 and e.attendance_requirement = 'required'
+                 and e.date < now()
+                 and not exists (
+                   select 1 from public.attendance_records ar2
+                   where ar2.event_id = e.id
+                     and ar2.student_id = p_student_id
+                     and ar2.status = 'excused'
+                 )
+              ), 0
+            ) * 100, 0
           ), 0
-        ) * 100, 0
-      ), 0
+        )
+      )
     )
-  );
+    else jsonb_build_object('ok', false, 'message', 'Only directors can view analytics.')
+  end;
 $$;
 
 -- Section attendance stats
@@ -1917,41 +2123,46 @@ stable
 security definer
 set search_path = public
 as $$
-  with section_stats as (
-    select
-      p.instrument as section,
-      count(distinct p.id) as member_count,
-      round(avg(
-        case
-          when required_events.cnt > 0 then
-            (attended_count.ac::numeric / required_events.cnt) * 100
-          else 0
-        end
-      ), 1) as avg_attendance_pct
-    from public.profiles p
-    left join lateral (
-      select count(*)::int as ac
-      from public.attendance_records ar
-      join public.events e on e.id = ar.event_id
-      where ar.student_id = p.id
-        and ar.attended = true
-        and e.archived = false
-        and e.attendance_requirement = 'required'
-    ) attended_count on true
-    left join lateral (
-      select count(*)::int as cnt
-      from public.events e
-      where e.archived = false
-        and e.attendance_requirement = 'required'
-        and e.date < now()
-    ) required_events on true
-    where p.instrument <> ''
-      and not (p.roles @> '{director}'::public.app_role[])
-      and p.deactivated = false
-    group by p.instrument
-    order by p.instrument
-  )
-  select jsonb_agg(row_to_json(s)) from section_stats s;
+  select case
+    when public.user_has_role('director') then (
+      with section_stats as (
+        select
+          p.instrument as section,
+          count(distinct p.id) as member_count,
+          round(avg(
+            case
+              when required_events.cnt > 0 then
+                (attended_count.ac::numeric / required_events.cnt) * 100
+              else 0
+            end
+          ), 1) as avg_attendance_pct
+        from public.profiles p
+        left join lateral (
+          select count(*)::int as ac
+          from public.attendance_records ar
+          join public.events e on e.id = ar.event_id
+          where ar.student_id = p.id
+            and ar.attended = true
+            and e.archived = false
+            and e.attendance_requirement = 'required'
+        ) attended_count on true
+        left join lateral (
+          select count(*)::int as cnt
+          from public.events e
+          where e.archived = false
+            and e.attendance_requirement = 'required'
+            and e.date < now()
+        ) required_events on true
+        where p.instrument <> ''
+          and not (p.roles @> '{director}'::public.app_role[])
+          and p.deactivated = false
+        group by p.instrument
+        order by p.instrument
+      )
+      select jsonb_agg(row_to_json(s)) from section_stats s
+    )
+    else jsonb_build_object('ok', false, 'message', 'Only directors can view analytics.')
+  end;
 $$;
 
 -- Event attendance summary
@@ -1962,29 +2173,34 @@ stable
 security definer
 set search_path = public
 as $$
-  with stats as (
-    select
-      count(*) filter (where status = 'present') as present_count,
-      count(*) filter (where status = 'late') as late_count,
-      count(*) filter (where status = 'excused') as excused_count,
-      count(*) filter (where status = 'absent' or status is null) as absent_count
-    from public.attendance_records ar
-    where ar.event_id = p_event_id
-  ),
-  roster as (
-    select count(*)::int as total
-    from public.profiles p
-    where not (p.roles @> '{director}'::public.app_role[])
-      and p.deactivated = false
-  )
-  select jsonb_build_object(
-    'ok', true,
-    'present', (select present_count from stats),
-    'late', (select late_count from stats),
-    'excused', (select excused_count from stats),
-    'absent', (select absent_count from stats),
-    'total', (select total from roster)
-  );
+  select case
+    when public.user_has_role('director') then (
+      with stats as (
+        select
+          count(*) filter (where status = 'present') as present_count,
+          count(*) filter (where status = 'late') as late_count,
+          count(*) filter (where status = 'excused') as excused_count,
+          count(*) filter (where status = 'absent' or status is null) as absent_count
+        from public.attendance_records ar
+        where ar.event_id = p_event_id
+      ),
+      roster as (
+        select count(*)::int as total
+        from public.profiles p
+        where not (p.roles @> '{director}'::public.app_role[])
+          and p.deactivated = false
+      )
+      select jsonb_build_object(
+        'ok', true,
+        'present', (select present_count from stats),
+        'late', (select late_count from stats),
+        'excused', (select excused_count from stats),
+        'absent', (select absent_count from stats),
+        'total', (select total from roster)
+      )
+    )
+    else jsonb_build_object('ok', false, 'message', 'Only directors can view analytics.')
+  end;
 $$;
 
 -- Attendance trend (last N required events)
@@ -1995,29 +2211,34 @@ stable
 security definer
 set search_path = public
 as $$
-  with recent_events as (
-    select e.id, e.name, e.type, e.date, e.event_type
-    from public.events e
-    where e.archived = false
-      and e.attendance_requirement = 'required'
-      and e.date < now()
-    order by e.date desc
-    limit p_limit
-  ),
-  event_stats as (
-    select
-      re.id, re.name, re.type, re.date, re.event_type,
-      (select count(*) from public.profiles p
-       where not (p.roles @> '{director}'::public.app_role[]) and p.deactivated = false) as roster_size,
-      (select count(*) from public.attendance_records ar
-       where ar.event_id = re.id and ar.attended = true) as present_count,
-      (select count(*) from public.attendance_records ar
-       where ar.event_id = re.id and ar.status = 'excused') as excused_count,
-      (select count(*) from public.attendance_records ar
-       where ar.event_id = re.id and ar.status = 'late') as late_count
-    from recent_events re
-  )
-  select jsonb_agg(row_to_json(es)) from event_stats es;
+  select case
+    when public.user_has_role('director') then (
+      with recent_events as (
+        select e.id, e.name, e.type, e.date, e.event_type
+        from public.events e
+        where e.archived = false
+          and e.attendance_requirement = 'required'
+          and e.date < now()
+        order by e.date desc
+        limit p_limit
+      ),
+      event_stats as (
+        select
+          re.id, re.name, re.type, re.date, re.event_type,
+          (select count(*) from public.profiles p
+           where not (p.roles @> '{director}'::public.app_role[]) and p.deactivated = false) as roster_size,
+          (select count(*) from public.attendance_records ar
+           where ar.event_id = re.id and ar.attended = true) as present_count,
+          (select count(*) from public.attendance_records ar
+           where ar.event_id = re.id and ar.status = 'excused') as excused_count,
+          (select count(*) from public.attendance_records ar
+           where ar.event_id = re.id and ar.status = 'late') as late_count
+        from recent_events re
+      )
+      select jsonb_agg(row_to_json(es)) from event_stats es
+    )
+    else jsonb_build_object('ok', false, 'message', 'Only directors can view analytics.')
+  end;
 $$;
 
 -- Grant analytics RPCs
@@ -2025,4 +2246,15 @@ grant execute on function public.get_student_attendance_pct(uuid) to authenticat
 grant execute on function public.get_section_attendance_stats() to authenticated;
 grant execute on function public.get_event_attendance_summary(uuid) to authenticated;
 grant execute on function public.get_attendance_trend(int) to authenticated;
+-- Analytics is director-only: the four functions above check the caller's
+-- role themselves (defense in depth), and PUBLIC/anon EXECUTE is revoked so
+-- anonymous clients cannot even attempt to call them.
+revoke execute on function public.get_student_attendance_pct(uuid) from public;
+revoke execute on function public.get_student_attendance_pct(uuid) from anon;
+revoke execute on function public.get_section_attendance_stats() from public;
+revoke execute on function public.get_section_attendance_stats() from anon;
+revoke execute on function public.get_event_attendance_summary(uuid) from public;
+revoke execute on function public.get_event_attendance_summary(uuid) from anon;
+revoke execute on function public.get_attendance_trend(int) from public;
+revoke execute on function public.get_attendance_trend(int) from anon;
 grant execute on function public.override_attendance(uuid, uuid, text, text, text) to authenticated;

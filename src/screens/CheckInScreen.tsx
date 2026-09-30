@@ -36,6 +36,7 @@ import {
   startCheckinSession,
 } from "../lib/rpc";
 import type {
+  AttendanceRequirement,
   AttendanceRow,
   CheckinMode,
   EventRow,
@@ -274,10 +275,24 @@ export default function CheckInScreen() {
 
   /* --------------------------- countdown clock --------------------------- */
   useEffect(() => {
-    if (!session) return;
-    const id = setInterval(() => setNowMs(Date.now()), 250);
+    if (!selectedEvent || !isStaff) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [session]);
+  }, [selectedEvent?.id, isStaff]);
+
+  const checkinOpensAt = selectedEvent
+    ? new Date(selectedEvent.date).getTime() - 15 * 60 * 1000
+    : 0;
+  const eventEndsAt = selectedEvent
+    ? selectedEvent.end_date
+      ? new Date(selectedEvent.end_date).getTime()
+      : new Date(selectedEvent.date).getTime() + 24 * 60 * 60 * 1000
+    : 0;
+  const beforeCheckinWindow = nowMs < checkinOpensAt;
+  const eventEnded = nowMs > eventEndsAt;
+  const canGenerateQr = Boolean(
+    selectedEvent && !beforeCheckinWindow && !eventEnded
+  );
 
   const secondsLeft = session
     ? Math.max(0, Math.ceil((new Date(session.expires_at).getTime() - nowMs) / 1000))
@@ -286,7 +301,7 @@ export default function CheckInScreen() {
 
   /* ------------------------------ generate ------------------------------- */
   async function generate() {
-    if (!selectedEvent) return;
+    if (!selectedEvent || !canGenerateQr || generating) return;
     setGenerating(true);
     setStaffError(null);
     const { result, error } = await startCheckinSession(selectedEvent.id);
@@ -306,12 +321,28 @@ export default function CheckInScreen() {
 
   async function setCheckinMode(mode: CheckinMode) {
     if (!selectedEvent || selectedEvent.checkin_mode === mode) return;
-    if (mode === "toggle") setSession(null);
-    setSelectedEvent({ ...selectedEvent, checkin_mode: mode });
+    // The database enforces attendance_requirement = 'none' ⟺
+    // checkin_mode = 'none', so keep both fields in sync here. Turning off
+    // collection makes the event not count; enabling collection on a
+    // non-counting event makes it required again.
+    const requirement: AttendanceRequirement =
+      mode === "none"
+        ? "none"
+        : selectedEvent.attendance_requirement === "none"
+          ? "required"
+          : selectedEvent.attendance_requirement;
+    // Drop the local QR session when the event stops being QR-enabled — the
+    // database deletes the session row too (events_checkin_mode_changed).
+    if (mode === "toggle" || mode === "none") setSession(null);
+    setSelectedEvent({
+      ...selectedEvent,
+      checkin_mode: mode,
+      attendance_requirement: requirement,
+    });
     setStaffError(null);
     const { error } = await supabase
       .from("events")
-      .update({ checkin_mode: mode })
+      .update({ checkin_mode: mode, attendance_requirement: requirement })
       .eq("id", selectedEvent.id);
     if (error) setStaffError(error.message);
   }
@@ -667,9 +698,18 @@ export default function CheckInScreen() {
                     }
                   >
                 {!session ? (
-                  <Button size="lg" className="w-full" onClick={generate} loading={generating}>
-                    <QrCode className="size-5" /> Generate Code
-                  </Button>
+                  <>
+                    <Button size="lg" className="w-full" onClick={generate} loading={generating} disabled={!canGenerateQr}>
+                      <QrCode className="size-5" /> Generate Code
+                    </Button>
+                    {!canGenerateQr && (
+                      <p className="mt-2 text-center text-xs text-zinc-500 dark:text-zinc-400" role="status">
+                        {beforeCheckinWindow
+                          ? "Check-in opens 15 minutes before the event."
+                          : "This event has ended. Check-in is closed."}
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <div className="flex flex-col items-center gap-3">
                     <div className="rounded-2xl bg-white p-4 shadow-inner ring-1 ring-black/10">
@@ -714,6 +754,7 @@ export default function CheckInScreen() {
                       size="sm"
                       onClick={generate}
                       loading={generating}
+                      disabled={!canGenerateQr}
                     >
                       <RefreshCw className="size-4" /> Regenerate
                     </Button>

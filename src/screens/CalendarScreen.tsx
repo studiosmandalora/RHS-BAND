@@ -810,7 +810,14 @@ export default function CalendarScreen() {
               value={eventType}
               onChange={(e) => {
                 setEventType(e.target.value);
-                setCheckinMode(defaultCheckinMode(e.target.value));
+                // "No Attendance" events never collect attendance, whatever
+                // the event type's default would be (DB constraint:
+                // attendance_requirement = 'none' ⟺ checkin_mode = 'none').
+                setCheckinMode(
+                  attendanceReq === "none"
+                    ? "none"
+                    : defaultCheckinMode(e.target.value)
+                );
               }}
             >
               {EVENT_TYPES.map((t) => (
@@ -832,6 +839,8 @@ export default function CalendarScreen() {
                   onClick={() => {
                     setAttendanceReq(r);
                     if (r === "none") setCheckinMode("none");
+                    else if (checkinMode === "none")
+                      setCheckinMode(defaultCheckinMode(eventType));
                   }}
                   className={cn(
                     "min-h-10 rounded-xl text-xs font-semibold transition-colors",
@@ -854,7 +863,13 @@ export default function CalendarScreen() {
                 <button
                   type="button"
                   key={m}
-                  onClick={() => setCheckinMode(m)}
+                  onClick={() => {
+                    setCheckinMode(m);
+                    // Keep requirement and method paired (DB constraint:
+                    // attendance_requirement = 'none' ⟺ checkin_mode = 'none').
+                    if (m === "none") setAttendanceReq("none");
+                    else if (attendanceReq === "none") setAttendanceReq("required");
+                  }}
                   className={cn(
                     "min-h-10 rounded-xl text-xs font-semibold transition-colors",
                     checkinMode === m

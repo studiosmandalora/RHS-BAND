@@ -369,7 +369,12 @@ on conflict (id) do nothing;
 -- ---------------------------------------------------------------------------
 -- 4. Past attendance (present/absent across the 3 past events)
 -- ---------------------------------------------------------------------------
-insert into public.attendance_records (event_id, student_id, attended, checked_in_at) values
+-- status must agree with attended (attendance_records_status_attended_check):
+-- derive it directly instead of taking the column default of 'absent'.
+insert into public.attendance_records (event_id, student_id, attended, checked_in_at, status)
+select event_id, student_id, attended, checked_in_at,
+       case when attended then 'present' else 'absent' end
+from (values
   ('e0000001-0000-4000-8000-000000000001', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', true,  now() - interval '9 days' + interval '1 hour'),
   ('e0000001-0000-4000-8000-000000000001', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', true,  now() - interval '9 days' + interval '2 hour'),
   ('e0000001-0000-4000-8000-000000000001', 'e2e2e2e2-e2e2-4e2e-8e2e-e2e2e2e2e2e2', false, null),
@@ -394,6 +399,7 @@ insert into public.attendance_records (event_id, student_id, attended, checked_i
   ('e0000003-0000-4000-8000-000000000003', '2b2b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b', false, null),
   ('e0000003-0000-4000-8000-000000000003', '3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c', true,  now() - interval '3 days' + interval '25 minutes'),
   ('e0000003-0000-4000-8000-000000000003', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', true,  now() - interval '3 days' + interval '40 minutes')
+) as v(event_id, student_id, attended, checked_in_at)
 on conflict (event_id, student_id) do nothing;
 
 -- ---------------------------------------------------------------------------

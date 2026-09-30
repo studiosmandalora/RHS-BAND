@@ -167,7 +167,7 @@ export default function AnalyticsScreen() {
         <EmptyState
           icon={<BarChart3 className="size-6" />}
           title="Director access only"
-          subtitle="Analytics are available to directors and staff."
+          subtitle="Analytics are available to directors only."
         />
       </div>
     );
