@@ -3,7 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { validateBandJoinCode } from "../lib/rpc";
 import { useAuth } from "../hooks/useAuth";
-import { demoAccounts, INSTRUMENTS } from "../lib/constants";
+import { INSTRUMENTS } from "../lib/constants";
 import { Alert, Button, Field, Input, Select } from "../components/ui";
 
 type Mode = "signin" | "signup";
@@ -27,12 +27,6 @@ export default function WelcomeScreen() {
   const [showReset, setShowReset] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
   const [resetSent, setResetSent] = useState(false);
-
-  // Demo quick-fill accounts are dev-only: they only render when the build is
-  // explicitly flagged (VITE_SHOW_DEMO_ACCOUNTS=true). Production builds never
-  // include them.
-  const showDemoAccounts =
-    import.meta.env.VITE_SHOW_DEMO_ACCOUNTS === "true";
 
   // Already signed in? Skip the auth screen. Checked after every hook
   // declaration so the hook count stays stable across renders (Rules of
@@ -112,13 +106,6 @@ export default function WelcomeScreen() {
     }
   }
 
-  function quickFill(acc: { email: string; password: string }) {
-    setEmail(acc.email);
-    setPassword(acc.password);
-    setMode("signin");
-    setError(null);
-  }
-
   async function sendReset(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -148,7 +135,7 @@ export default function WelcomeScreen() {
 
       <div className="relative z-10 flex flex-1 flex-col px-6 pb-8 pt-14">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <img src="/logo-dark.svg" alt="RHS Band" className="h-56 w-auto" />
+          <img src="/redmond-band-2.svg" alt="Redmond Band" className="h-56 w-auto" />
           <div>
             <h1 className="text-2xl font-black tracking-tight text-white">
               RHS Band Attendance
@@ -313,30 +300,6 @@ export default function WelcomeScreen() {
             </>
           )}
         </div>
-
-        {/* demo accounts — dev only, gated by VITE_SHOW_DEMO_ACCOUNTS=true */}
-        {showDemoAccounts && (
-          <details className="mt-6 w-full max-w-sm self-center rounded-2xl bg-white/10 p-4 ring-1 ring-white/15">
-            <summary className="cursor-pointer text-sm font-semibold text-white/90">
-              Demo accounts
-            </summary>
-            <div className="mt-3 space-y-1.5">
-              {demoAccounts().map((acc) => (
-                <button
-                  key={acc.email}
-                  onClick={() => quickFill(acc)}
-                  className="flex w-full items-center justify-between gap-2 rounded-xl bg-white/5 px-3 py-2 text-left text-xs text-white/85 transition-colors hover:bg-white/10"
-                >
-                  <span className="font-mono">{acc.email}</span>
-                  <span className="shrink-0 text-white/60">{acc.note}</span>
-                  <span className="shrink-0 font-mono text-white/45">
-                    {acc.password}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </details>
-        )}
       </div>
     </div>
   );

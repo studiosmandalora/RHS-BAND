@@ -340,7 +340,7 @@ export default function ProfileScreen() {
       </Button>
 
       <p className="mt-6 text-center text-[11px] text-zinc-400">
-        RHS Band Attendance Manager · demo build
+        RHS Band Attendance Manager
       </p>
     </div>
   );
